@@ -5,6 +5,8 @@
 #include <thread>
 #include <mutex>
 #include <vector>
+#include "settings.h"
+#include "json.h"
 
 class AICompanion {
 public:
@@ -13,26 +15,56 @@ public:
     bool isThinking = false;
     std::mutex aiMutex;
 
-    // Default configuration: Cloud API (OpenAI compatible) or Local Ollama
-    std::wstring apiHost = L"api.openai.com"; // or L"localhost" for local Ollama
-    std::wstring apiPath = L"/v1/chat/completions"; // or L"/api/generate"
+    // Endpoint and key, written by the app (Configure/SetKey) under aiMutex; Ask copies them before its worker starts
+    std::wstring apiHost = L"api.openai.com";
+    std::wstring apiPath = L"/v1/chat/completions";
+    std::wstring model = L"gpt-4o-mini";
     int apiPort = INTERNET_DEFAULT_HTTPS_PORT;
     bool useHttps = true;
-    std::wstring apiKey = L""; // User enters their API key in config
+    bool needKey = true; // false for a local server, which answers without a key
+    std::wstring apiKey = L"";
+
+    void Configure(const AiEndpoint& e) {
+        std::lock_guard<std::mutex> lock(aiMutex);
+        apiHost = e.host;
+        apiPath = e.path;
+        model = e.model;
+        apiPort = e.port;
+        useHttps = e.https;
+        needKey = e.needKey;
+    }
+
+    void SetKey(const std::wstring& key) {
+        std::lock_guard<std::mutex> lock(aiMutex);
+        apiKey = key;
+    }
+
+    bool HasKey() {
+        std::lock_guard<std::mutex> lock(aiMutex);
+        return !apiKey.empty();
+    }
 
     void Ask(const std::wstring& prompt) {
         if (isThinking || prompt.empty()) return;
         isThinking = true;
         lastPrompt = prompt;
 
-        std::thread([this, prompt]() {
+        std::wstring host, path, model, key;
+        int port;
+        bool https, needKey;
+        {
+            std::lock_guard<std::mutex> lock(aiMutex);
+            host = apiHost; path = apiPath; model = this->model; port = apiPort; https = useHttps; needKey = this->needKey; key = apiKey;
+        }
+
+        std::thread([this, prompt, host, path, model, key, port, https, needKey]() {
             {
                 std::lock_guard<std::mutex> lock(aiMutex);
                 lastResponse = L"Pensando respuesta en la nube...";
             }
 
             // If no API key configured yet, give friendly guidance
-            if (apiKey.empty() && apiHost == L"api.openai.com") {
+            if (key.empty() && needKey) {
                 {
                     std::lock_guard<std::mutex> lock(aiMutex);
                     lastResponse = L"Para usar el companero IA sin gastar RAM, ingresa tu API Key en la configuracion o ejecuta Ollama local en el puerto 11434.";
@@ -54,25 +86,25 @@ public:
             for (char c : promptUtf8) {
                 if (c == '"') safePrompt += "\\\"";
                 else if (c == '\\') safePrompt += "\\\\";
-                else if (c == '\n') safePrompt += "\\n";
+                else if (c == '\n') safePrompt += "\n";
                 else safePrompt += c;
             }
 
-            std::string jsonBody = "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"system\", \"content\": \"Eres Capri, un companero de escritorio ultraligero y util.\"}, {\"role\": \"user\", \"content\": \"" + safePrompt + "\"}]}";
+            std::string jsonBody = "{\"model\": " + JsonQuote(model) + ", \"messages\": [{\"role\": \"system\", \"content\": \"Eres Capri, un companero de escritorio ultraligero y util.\"}, {\"role\": \"user\", \"content\": \"" + safePrompt + "\"}]}";
 
             HINTERNET hSession = WinHttpOpen(L"CapriNotch-AI/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
             std::wstring answer = L"No se pudo conectar al servicio de IA.";
 
             if (hSession) {
-                HINTERNET hConnect = WinHttpConnect(hSession, apiHost.c_str(), apiPort, 0);
+                HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), port, 0);
                 if (hConnect) {
-                    DWORD flags = useHttps ? WINHTTP_FLAG_SECURE : 0;
-                    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", apiPath.c_str(), NULL,
+                    DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
+                    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", path.c_str(), NULL,
                                                             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
                     if (hRequest) {
                         std::wstring headers = L"Content-Type: application/json\r\n";
-                        if (!apiKey.empty()) {
-                            headers += L"Authorization: Bearer " + apiKey + L"\r\n";
+                        if (!key.empty()) {
+                            headers += L"Authorization: Bearer " + key + L"\r\n";
                         }
 
                         if (WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(),
@@ -127,4 +159,3 @@ public:
         }).detach();
     }
 };
-

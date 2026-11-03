@@ -1,5 +1,6 @@
 #pragma once
 #include "types.h"
+#include "settings.h"
 
 class PomodoroManager {
 public:
@@ -12,8 +13,17 @@ public:
     void Reset() {
         state.isRunning = false;
         state.isBreak = false;
-        state.totalSeconds = 25 * 60;
+        state.totalSeconds = g_settings.focusMin * 60;
         state.remainingSeconds = state.totalSeconds;
+    }
+
+    // A changed duration takes effect at once while stopped; while running it waits for the next cycle (Tick reads it then).
+    // An unchanged duration leaves a paused session where it was.
+    void Retime() {
+        int want = (state.isBreak ? g_settings.breakMin : g_settings.focusMin) * 60;
+        if (state.isRunning || state.totalSeconds == want) return;
+        state.totalSeconds = want;
+        state.remainingSeconds = want;
     }
 
     void Tick() {
@@ -26,12 +36,12 @@ public:
             state.isBreak = !state.isBreak;
             if (state.isBreak) {
                 state.sessionsCompleted++;
-                state.totalSeconds = 5 * 60; // 5 min short break
+                state.totalSeconds = g_settings.breakMin * 60;
             } else {
-                state.totalSeconds = 25 * 60; // 25 min work
+                state.totalSeconds = g_settings.focusMin * 60;
             }
             state.remainingSeconds = state.totalSeconds;
-            MessageBeep(MB_ICONASTERISK);
+            if (g_settings.pomoSound) MessageBeep(MB_ICONASTERISK);
         }
     }
 
@@ -43,4 +53,3 @@ public:
         return buf;
     }
 };
-

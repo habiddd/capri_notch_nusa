@@ -22,7 +22,7 @@ constexpr int MEDIA_COL_LYRICS = 300; // media controls column while lyrics shar
 constexpr int LYRICS_PANEL_W = 740;   // panel width with lyrics: the lyrics column gets the other 440 px
 constexpr int CAL_PANEL_W = 760;      // calendar tab content size (the expanded notch grows for it)
 constexpr int CAL_PANEL_H = 400;
-constexpr int CAL_POP_H = 480; // the panel grows while the event window is open so the window has room
+constexpr int CAL_POP_H = 524; // the panel grows while the event window is open so the window has room (card 458 + margins)
 
 class CapriUI {
 public:
@@ -51,12 +51,16 @@ public:
     int calHour = 8;       // first hour row of the day/week grid
     size_t calAgendaTop = 0;
     bool calHidden[CAL_CAT_COUNT] = {}; // categories switched off for this session
+    // Sync state of each service (1 Google, 2 Outlook): the app sets it before every paint
+    enum SyncDot { SYNC_OFF, SYNC_ON, SYNC_BUSY, SYNC_ERR };
+    SyncDot syncDot[3] = { SYNC_OFF, SYNC_OFF, SYNC_OFF };
+    bool linkGoogle = false; // the calendar link's host is Google's: its events are marked G, others O
 
     // Clickable areas, rebuilt on every calendar paint (so the click handler never repeats the layout); later = on top
     enum { HIT_DAY, HIT_PREV, HIT_NEXT, HIT_TODAY, HIT_VIEW, HIT_CAT, HIT_EVENT, HIT_SLOT,
            HIT_COLOR, HIT_MOVE, HIT_REPEAT, HIT_EDIT, HIT_DELETE, HIT_NEW,
            HIT_POP_BACK, HIT_POP_CARD, HIT_POP_TITLE, HIT_POP_NOTES, HIT_POP_DATE, HIT_POP_ALLDAY, HIT_POP_START, HIT_POP_END,
-           HIT_POP_REPEAT, HIT_POP_COLOR, HIT_POP_ALERT, HIT_POP_SAVE, HIT_POP_DELETE, HIT_POP_CANCEL };
+           HIT_POP_REPEAT, HIT_POP_COLOR, HIT_POP_ALERT, HIT_POP_SAVE, HIT_POP_DELETE, HIT_POP_CANCEL, HIT_POP_SOURCE };
     struct CalHit { Gdiplus::RectF r; int kind, a, b; };
     std::vector<CalHit> calHits;
     static constexpr const wchar_t* DAY_NAMES[] = { L"Domingo", L"Lunes", L"Martes", L"Miércoles", L"Jueves", L"Viernes", L"Sábado" };
@@ -148,7 +152,9 @@ public:
     ULONGLONG noticeUntil = 0;
 
     // True while the collapsed pill has something moving: the equalizer, or the idle eyes' blink window
-    bool PillLive(bool expanded, bool musicPlaying) const { return !expanded && (musicPlaying || GetTickCount64() % 4500 < 200); }
+    bool PillLive(bool expanded, bool musicPlaying) const {
+        return !expanded && ((g_settings.equalizer && musicPlaying) || (g_settings.eyes && GetTickCount64() % 4500 < 200));
+    }
 
     // Idle pill text: the next timed event today, else the open task count, else the date. todayTimed is (minute, title).
     static std::wstring IdleLine(const std::vector<std::pair<int, std::wstring>>& todayTimed, int nowMinute, int openTasks,
@@ -188,7 +194,7 @@ public:
 
     // The sung line shown in the collapsed notch, empty when the title should show instead.
     static std::wstring ClosedLyric(MediaManager& media, PomodoroManager& pomo) {
-        if (!media.showLyrics || !media.isPlaying || pomo.state.isRunning) return L"";
+        if (!g_settings.pillLyrics || !media.showLyrics || !media.isPlaying || pomo.state.isRunning) return L"";
         return media.Lyrics().line;
     }
 
@@ -388,7 +394,7 @@ public:
                 // Equalizer: 4 bars dancing while playing, flat at 4 px when paused
                 const Color& tn = media.tint[1];
                 SolidBrush bar(Color(255, (tn.GetR() + 255) / 2, (tn.GetG() + 255) / 2, (tn.GetB() + 255) / 2));
-                for (int i = 0; i < 4; ++i) {
+                for (int i = 0; g_settings.equalizer && i < 4; ++i) {
                     float h = media.isPlaying ? 4.0f + 10.0f * (0.5f + 0.5f * sinf(t * 0.012f + i * 1.7f)) : 4.0f;
                     GraphicsPath p;
                     AddRoundRect(p, (float)(width - 30 + i * 5), (height - h) / 2.0f, 3.0f, h, 1.5f);
@@ -397,11 +403,15 @@ public:
             } else {
                 // Idle: Nusa's eyes (blink every 4.5 s, shut after 2 min without input), then what comes next today
                 LASTINPUTINFO li = { sizeof(li) };
-                bool asleep = GetLastInputInfo(&li) && GetTickCount() - li.dwTime > 120000;
-                float eyeH = asleep ? 2.0f : (t % 4500) < 140 ? 2.0f : 9.0f;
-                SolidBrush eye(Color(255, 255, 255, 255));
-                for (float x : { 13.0f, 22.0f }) g.FillEllipse(&eye, x, 17.0f - eyeH / 2.0f, 5.0f, eyeH);
-                if (asleep) g.DrawString(L"z", -1, &fontSmall, PointF(28.0f, 2.0f), &textDim);
+                bool asleep = GetLastInputInfo(&li) && GetTickCount() - li.dwTime > (DWORD)g_settings.sleepMin * 60000;
+                if (g_settings.eyes) {
+                    float eyeH = asleep ? 2.0f : (t % 4500) < 140 ? 2.0f : 9.0f;
+                    SolidBrush eye(Color(255, 255, 255, 255));
+                    for (float x : { 13.0f, 22.0f }) g.FillEllipse(&eye, x, 17.0f - eyeH / 2.0f, 5.0f, eyeH);
+                    if (asleep) g.DrawString(L"z", -1, &fontSmall, PointF(28.0f, 2.0f), &textDim);
+                } else {
+                    g.DrawString(L"", -1, &iconSmall, leftSlot, &center, &textDim); // eyes off: a faint calendar in their place
+                }
 
                 std::vector<std::pair<int, std::wstring>> timed;
                 for (size_t i : events.On(TodayKey()))
@@ -436,6 +446,8 @@ public:
                 g.DrawString(tabIcons[i], -1, &iconFont, RectF(tabX, 8.0f, 40.0f, 30.0f), &center, isActive ? &textWhite : &textDim);
             }
             g.DrawString(tabNames[activeTab], -1, &fontMedium, RectF(16.0f + TAB_COUNT * 46.0f + 6.0f, 8.0f, 160.0f, 30.0f), &leftMid, &textWhite);
+            // Settings gear at the right end of the row, on every tab (the title above stops at x 412, so they never meet)
+            g.DrawString(L"", -1, &iconSmall, RectF((float)(width - 44), 8.0f, 32.0f, 30.0f), &center, &textDim);
 
             // 2. Tab Content Views
             if (activeTab == TAB_MEDIA) {
@@ -543,8 +555,8 @@ public:
                 }
                 std::wstring timeStr = pomo.GetFormattedTime();
                 g.DrawString(timeStr.c_str(), -1, &fontBig, RectF(cx - rr, cy - 24.0f, rr * 2.0f, 36.0f), &center, &textWhite);
-                g.DrawString(pomo.state.isBreak ? L"Descanso · 5 min" : L"Enfoque · 25 min", -1, &fontSmall,
-                             RectF(cx - rr, cy + 12.0f, rr * 2.0f, 18.0f), &center, &textDim);
+                std::wstring modeLine = (pomo.state.isBreak ? L"Descanso · " + std::to_wstring(g_settings.breakMin) : L"Enfoque · " + std::to_wstring(g_settings.focusMin)) + L" min";
+                g.DrawString(modeLine.c_str(), -1, &fontSmall, RectF(cx - rr, cy + 12.0f, rr * 2.0f, 18.0f), &center, &textDim);
 
                 // Right column: mode, status, round controls
                 float colX = 210.0f;
@@ -787,8 +799,9 @@ public:
                             SolidBrush bar(catColor(e.color));
                             g.FillRectangle(&bar, 256.0f, ry + 4.0f, 3.0f, 14.0f);
                             g.DrawString(TimeRange(e).c_str(), -1, &fontSmall, RectF(268.0f, ry, 96.0f, rh), &leftMid, &textDim);
-                            g.DrawString(e.title.c_str(), -1, &fontSmall, RectF(368.0f, ry, 330.0f, rh), &leftMid, &textWhite);
-                            if (e.repeat) g.DrawString(L"", -1, &iconSmall, RectF(708.0f, ry, 24.0f, rh), &center, &textDim);
+                            g.DrawString(e.title.c_str(), -1, &fontSmall, RectF(368.0f, ry, 316.0f, rh), &leftMid, &textWhite);
+                            if (e.src) g.DrawString((e.src == 1 || (e.src == 3 && linkGoogle)) ? L"G" : L"O", -1, &fontTiny, RectF(712.0f, ry, 20.0f, rh), &center, &textDim);
+                            if (e.repeat) g.DrawString(L"", -1, &iconSmall, RectF(684.0f, ry, 24.0f, rh), &center, &textDim);
                             hit(250.0f, ry, 490.0f, rh, HIT_EVENT, row.ev);
                         }
                         ry += rh;
@@ -943,17 +956,22 @@ public:
                         if (c == e.color) g.DrawEllipse(&selRing, dx - 7.0f, 363.0f, 14.0f, 14.0f);
                         hit(dx - 8.0f, 352.0f, 16.0f, 36.0f, HIT_COLOR, c);
                     }
-                    g.DrawString(L"", -1, &iconSmall, RectF(548.0f, 352.0f, 20.0f, 36.0f), &center, &textDim);
-                    g.DrawString(L"", -1, &iconSmall, RectF(568.0f, 352.0f, 20.0f, 36.0f), &center, &textDim);
-                    hit(548.0f, 352.0f, 20.0f, 36.0f, HIT_MOVE, -1);
-                    hit(568.0f, 352.0f, 20.0f, 36.0f, HIT_MOVE, 1);
+                    // A calendar link's event is read-only: move, repeat, edit and delete are shown grey and do nothing; only the colours work
+                    const bool ro = e.src == 3;
+                    SolidBrush disabled(Color(255, 70, 72, 78)), &act = ro ? disabled : textDim;
+                    g.DrawString(L"", -1, &iconSmall, RectF(548.0f, 352.0f, 20.0f, 36.0f), &center, &act);
+                    g.DrawString(L"", -1, &iconSmall, RectF(568.0f, 352.0f, 20.0f, 36.0f), &center, &act);
+                    if (!ro) hit(548.0f, 352.0f, 20.0f, 36.0f, HIT_MOVE, -1);
+                    if (!ro) hit(568.0f, 352.0f, 20.0f, 36.0f, HIT_MOVE, 1);
                     fillRound(&chipBg, 592.0f, 359.0f, 92.0f, 22.0f, 8.0f);
-                    g.DrawString(CAL_REPEAT[e.repeat], -1, &fontSmall, RectF(592.0f, 359.0f, 92.0f, 22.0f), &center, e.repeat ? &textWhite : &textDim);
-                    hit(592.0f, 359.0f, 92.0f, 22.0f, HIT_REPEAT);
-                    g.DrawString(L"", -1, &iconSmall, RectF(688.0f, 352.0f, 24.0f, 36.0f), &center, &textDim);
-                    g.DrawString(L"", -1, &iconSmall, RectF(712.0f, 352.0f, 24.0f, 36.0f), &center, &textDim);
-                    hit(688.0f, 352.0f, 24.0f, 36.0f, HIT_EDIT);
-                    hit(712.0f, 352.0f, 24.0f, 36.0f, HIT_DELETE);
+                    // A series already in the service keeps its repeat: it is shown, dimmed, and cannot be changed here
+                    bool repeatLocked = ro || (e.src && !e.rid.empty());
+                    g.DrawString(CAL_REPEAT[e.repeat], -1, &fontSmall, RectF(592.0f, 359.0f, 92.0f, 22.0f), &center, e.repeat && !repeatLocked ? &textWhite : &textDim);
+                    if (!repeatLocked) hit(592.0f, 359.0f, 92.0f, 22.0f, HIT_REPEAT);
+                    g.DrawString(L"", -1, &iconSmall, RectF(688.0f, 352.0f, 24.0f, 36.0f), &center, &act);
+                    g.DrawString(L"", -1, &iconSmall, RectF(712.0f, 352.0f, 24.0f, 36.0f), &center, &act);
+                    if (!ro) hit(688.0f, 352.0f, 24.0f, 36.0f, HIT_EDIT);
+                    if (!ro) hit(712.0f, 352.0f, 24.0f, 36.0f, HIT_DELETE);
                 }
 
                 // --- New / edit event window over everything: dimmed notch, then the card. Its hit areas replace the calendar's.
@@ -966,8 +984,8 @@ public:
                     g.TranslateTransform((float)NOTCH_SHOULDER, 0.0f);
                     calHits.clear();
                     hit(0.0f, 0.0f, (float)width, (float)height, HIT_POP_BACK);
-                    // Card 500x416; labels in a column at LX, controls from V, rows 42 px apart
-                    const float CX = 130.0f, CY = 50.0f, CW = 500.0f, CH = 416.0f, LX = 158.0f, RX = 602.0f, V = 246.0f;
+                    // Card 500x458; labels in a column at LX, controls from V, rows 42 px apart
+                    const float CX = 130.0f, CY = 50.0f, CW = 500.0f, CH = 458.0f, LX = 158.0f, RX = 602.0f, V = 246.0f;
                     hit(CX, CY, CW, CH, HIT_POP_CARD);
 
                     SolidBrush cardBg(Color(255, 24, 25, 30)), redText(Color(255, 239, 68, 68));
@@ -979,8 +997,8 @@ public:
 
                     auto label = [&](float y, const wchar_t* s) { g.DrawString(s, -1, &fontSmall, RectF(LX, y, V - LX, 24.0f), &leftMid, &textDim); };
                     auto chip = [&](float x, float y, float w, const wchar_t* s, bool on, int kind, int a = 0, bool live = true) {
-                        fillRound(on ? &todayFill : &chipBg, x, y, w, 24.0f, 9.0f);
-                        g.DrawString(s, -1, &fontSmall, RectF(x, y, w, 24.0f), &center, on ? &ink : live ? &textWhite : &textDim);
+                        fillRound(on && live ? &todayFill : &chipBg, x, y, w, 24.0f, 9.0f);
+                        g.DrawString(s, -1, &fontSmall, RectF(x, y, w, 24.0f), &center, !live ? &textDim : on ? &ink : &textWhite);
                         if (live) hit(x, y, w, 24.0f, kind, a);
                     };
                     auto arrow = [&](float x, float y, const wchar_t* glyph, int kind, int a) {
@@ -1004,8 +1022,20 @@ public:
 
                     field(LX, 72.0f, RX - LX, 40.0f, pe.title, 44, L"Añadir título", &fontTitle, 0);
 
+                    // Calendar: picked only when creating (Capri and the connected services); editing shows the current one, dimmed
+                    const float yCal = 152.0f, yDate = 194.0f, yTime = 236.0f, yRep = 278.0f, yCat = 320.0f, yAlert = 362.0f, yNotes = 404.0f, yBtn = 460.0f;
+                    label(yCal, L"Calendario");
+                    const wchar_t* srcNames[] = { L"Capri", L"Google", L"Outlook" };
+                    const float srcW[] = { 64.0f, 72.0f, 80.0f };
+                    float sx = V;
+                    for (int s = 0; s < 3; ++s) {
+                        if (popEdit < 0 ? s > 0 && syncDot[s] == SYNC_OFF : s != pe.src) continue;
+                        if (popEdit < 0) chip(sx, yCal, srcW[s], srcNames[s], pe.src == s, HIT_POP_SOURCE, s);
+                        else chip(sx, yCal, srcW[s], srcNames[s], true, HIT_POP_SOURCE, s, false);
+                        sx += srcW[s] + 8.0f;
+                    }
+
                     // Date
-                    const float yDate = 152.0f, yTime = 194.0f, yRep = 236.0f, yCat = 278.0f, yAlert = 320.0f, yNotes = 362.0f, yBtn = 418.0f;
                     label(yDate, L"Fecha");
                     arrow(V, yDate, L"", HIT_POP_DATE, DateKey(KeyDay(pe.date, -1)));
                     g.DrawString(DayShort(pe.date).c_str(), -1, &fontSmallBold, RectF(V + 26.0f, yDate, 90.0f, 24.0f), &center, &textWhite);
@@ -1029,11 +1059,12 @@ public:
                         arrow(V + 312.0f, yTime, L"", HIT_POP_END, 15);
                     }
 
-                    // Repeat
+                    // Repeat (dimmed for a series already in the service)
                     label(yRep, L"Repetir");
                     const wchar_t* repNames[] = { L"No", L"Diario", L"Semanal", L"Mensual", L"Anual" };
                     const float repW[] = { 44.0f, 58.0f, 66.0f, 66.0f, 54.0f };
-                    for (int i = 0, x = (int)V; i < 5; x += (int)repW[i++] + 8) chip((float)x, yRep, repW[i], repNames[i], pe.repeat == i, HIT_POP_REPEAT, i);
+                    bool repeatLocked = pe.src && !pe.rid.empty();
+                    for (int i = 0, x = (int)V; i < 5; x += (int)repW[i++] + 8) chip((float)x, yRep, repW[i], repNames[i], pe.repeat == i, HIT_POP_REPEAT, i, !repeatLocked);
 
                     // Category
                     label(yCat, L"Categoría");

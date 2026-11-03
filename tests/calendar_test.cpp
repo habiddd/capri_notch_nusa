@@ -71,6 +71,37 @@ int main() {
     m.events.clear();
     m.Load();
     assert(m.events.size() == 2 && m.events[0].title == L"5|x" && m.events[0].alert == 10 && m.events[1].title == L"12|2|3|4|5");
+
+    // Remote events keep their source, id and pending bits; a pending delete stays in the file but is not shown
+    m.events.clear();
+    CalEvent g{ 20261110, 600, 660, 1, 0, L"Remoto", 10, L"nota" };
+    g.src = 1;
+    g.rid = L"gid1";
+    m.Add(g); // a remote event made here goes up on the next sync
+    m.events.clear();
+    m.Load();
+    assert(m.events.size() == 1 && m.events[0].src == 1 && m.events[0].rid == L"gid1" && m.events[0].dirty == 1 && m.events[0].notes == L"nota");
+    WriteUtf8File(m.storagePath, L"20261110|600|660|1|0|10|Remoto\tnota\t1\t0\tgid1\n20261111|-1|-1|0|0|10|Local\t\t0\t0\t\n20261112|-1|-1|0|0|10|Vieja\n");
+    m.Load();
+    assert(m.events.size() == 3 && m.events[0].dirty == 0 && m.events[0].src == 1 && m.events[1].src == 0 && m.events[1].rid.empty());
+    assert(m.events[2].title == L"Vieja" && m.events[2].src == 0 && m.events[2].dirty == 0);
+    // editing a clean remote event marks it for update; a notes change marks the notes too
+    CalEvent ed = m.events[0];
+    ed.title = L"Editado";
+    m.Update(0, ed);
+    assert(m.events[0].dirty == 2 && m.events[0].rev == 1 && m.events[0].src == 1 && m.events[0].rid == L"gid1");
+    ed = m.events[0];
+    ed.notes = L"otra";
+    m.Update(0, ed);
+    assert(m.events[0].dirty == 10);
+    // deleting a remote event hides it until the sync deletes it; a local one is removed at once
+    m.Remove(0);
+    assert(m.events.size() == 3 && (m.events[0].dirty & 4) && m.On(20261110).empty() && m.On(20261111).size() == 1);
+    m.events.clear();
+    m.Load();
+    assert(m.events.size() == 3 && m.events[0].dirty == 14 && m.On(20261110).empty());
+    m.Remove(1);
+    assert(m.events.size() == 2 && m.events[1].title == L"Vieja");
     DeleteFileW(m.storagePath.c_str());
     return 0;
 }

@@ -12,6 +12,9 @@
 #include "ai_client.h"
 #include "audio_wake.h"
 #include "ui.h"
+#include "sync.h"
+#include "settings.h"
+#include "settings_ui.h"
 
 #define TIMER_ANIMATION 1
 #define TIMER_SECOND 2
@@ -20,10 +23,18 @@
 #define TIMER_HOVER 5  // one-shot: expand once the pointer has rested on the pill
 #define TIMER_LEAVE 6  // one-shot: collapse once the pointer has stayed away
 #define TIMER_TUCK 7   // 100 ms, only while tucked: untuck when the pointer leaves the zone around the notch
+#define TIMER_SYNC 8      // every 5 min: pulls and pushes each connected calendar
+#define TIMER_SYNC_SOON 9 // one-shot, 2 s after a change to a remote event: uploads it without waiting for the timer
 #define WM_NEAR_CLICK (WM_USER + 102) // posted by the mouse hook with the screen point of every left click
+#define WM_TRAY (WM_USER + 111)       // the tray icon's callback (NOTIFYICON_VERSION_4: LOWORD(lParam) is the event)
+#define MENU_EXPAND 1001
+#define MENU_MOVE 1002
+#define MENU_QUIT 1003
+#define MENU_CONFIG 1004
+#define MENU_HIDE 1005
 
-constexpr int HOVER_DELAY_MS = 180; // nabyscape's default hover delay
-constexpr int LEAVE_DELAY_MS = 300; // grace period so a quick slip outside does not collapse
+static UINT g_taskbarCreated = 0; // sent when Explorer restarts: the tray icon is added again
+
 constexpr int TUCK_EDGE = 6;        // px of the pill left visible when tucked (nabyscape's edge height)
 constexpr int NEAR_ZONE = 60;       // px around the pill where a click tucks it
 
@@ -45,6 +56,8 @@ public:
     bool expanded = false;
     bool isTrackingMouse = false;
     bool tucked = false; // slid up out of the way after a click beside it
+    bool hiddenByUser = false, hiddenByFullscreen = false; // the tray's "Ocultar notch", and a full-screen app
+    HICON trayIcon = NULL;
     int tuckY = 0;       // current slide-up offset, logical px
     std::wstring lyricSig; // last painted lyric state
     NotchTab activeTab = TAB_MEDIA;
@@ -128,7 +141,136 @@ public:
         // Whistle engine starts dormant/unloaded (0 MB RAM) until explicitly loaded by user button
         SetTimer(hWnd, TIMER_ANIMATION, 16, NULL); // ~60fps smooth animation
         SetTimer(hWnd, TIMER_SECOND, 1000, NULL);  // 1s logic tick
+        LoadSettings(SettingsIniPath(), g_settings);
+        g_settings.startWithWindows = RunAtLogin(); // the Run key is the truth, not the ini
+        std::string key;
+        if (UnprotectFromFile(AppDataFile(L"capri_ai_key.bin"), key)) ai.SetKey(Wide(key));
+        ui.calView = (CapriUI::CalView)g_settings.calDefaultView;
+        ApplySettings();
+        InitSync();
+        AddTray();
         UpdateDisplay();
+    }
+
+    // ---- settings (settings.h): applied at start and after every change from the settings window
+    void ApplySettings() {
+        ai.Configure(AiPreset(g_settings));
+        LoadProviders();
+        SetTimer(hWnd, TIMER_SYNC, (UINT)g_settings.syncMinutes * 60000, NULL);
+        pomo.Retime();
+        if (RunAtLogin() != g_settings.startWithWindows) SetRunAtLogin(g_settings.startWithWindows);
+        if (!g_settings.hideFullscreen) hiddenByFullscreen = false;
+        ApplyVisibility();
+        UpdateTargetDimensions();
+        UpdateDisplay();
+    }
+
+    void ApplyVisibility() { ShowWindow(hWnd, hiddenByUser || hiddenByFullscreen ? SW_HIDE : SW_SHOWNOACTIVATE); }
+
+    // Full-screen games, videos and presentations: the notch steps aside, and comes back when they end
+    void CheckFullscreen() {
+        QUERY_USER_NOTIFICATION_STATE qs = QUNS_ACCEPTS_NOTIFICATIONS;
+        bool full = g_settings.hideFullscreen && SUCCEEDED(SHQueryUserNotificationState(&qs)) &&
+                    (qs == QUNS_BUSY || qs == QUNS_RUNNING_D3D_FULL_SCREEN || qs == QUNS_PRESENTATION_MODE);
+        if (full == hiddenByFullscreen) return;
+        hiddenByFullscreen = full;
+        if (full) SetExpanded(false);
+        ApplyVisibility();
+    }
+
+    // The key goes to DPAPI, never to the ini; an empty key deletes the file
+    void SetAiKey(const std::wstring& key) {
+        std::wstring path = AppDataFile(L"capri_ai_key.bin");
+        if (key.empty()) DeleteFileW(path.c_str());
+        else ProtectToFile(path, Utf8(key));
+        ai.SetKey(key);
+    }
+
+    void OpenSettings(int section) {
+        SettingsHooks h;
+        h.account = [this](int src, int op) {
+            SyncAccount& a = Account(src);
+            if (op == 0) ConnectSync(a);
+            else if (op == 1) DisconnectSync(a);
+            else SyncOne(a);
+            UpdateDisplay();
+        };
+        h.command = [this](int cmd) {
+            if (cmd == 1) SwitchMonitor();
+            else DestroyWindow(hWnd);
+        };
+        h.hasKey = [this] { return ai.HasKey(); };
+        h.setKey = [this](const std::wstring& key) { SetAiKey(key); };
+        SettingsWindow::Open(hWnd, section, &google, &outlook, &ics, h);
+    }
+
+    // ---- tray icon: a white pill with two eyes, drawn at the shell's small-icon size (the project has no .ico)
+    HICON MakeTrayIcon() {
+        using namespace Gdiplus;
+        int px = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForWindow(hWnd));
+        Bitmap bmp(px, px, PixelFormat32bppARGB);
+        Graphics g(&bmp);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.Clear(Color(0, 0, 0, 0));
+        SolidBrush white(Color(255, 242, 242, 245)), ink(Color(255, 8, 9, 12));
+        float h = px * 0.5f, y = px * 0.25f;
+        g.FillEllipse(&white, 0.0f, y, h, h);
+        g.FillEllipse(&white, px - h, y, h, h);
+        g.FillRectangle(&white, h / 2.0f, y, px - h, h);
+        g.FillEllipse(&ink, px * 0.33f, px * 0.38f, px * 0.12f, px * 0.24f);
+        g.FillEllipse(&ink, px * 0.55f, px * 0.38f, px * 0.12f, px * 0.24f);
+        HICON icon = NULL;
+        bmp.GetHICON(&icon);
+        return icon;
+    }
+
+    // Re-run on TaskbarCreated (Explorer restarted). Returns what the shell said.
+    BOOL AddTray() {
+        if (!trayIcon) trayIcon = MakeTrayIcon();
+        NOTIFYICONDATAW nid = { sizeof(nid) };
+        nid.hWnd = hWnd;
+        nid.uID = 1;
+        nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE | NIF_SHOWTIP;
+        nid.uCallbackMessage = WM_TRAY;
+        nid.hIcon = trayIcon;
+        lstrcpynW(nid.szTip, L"Capri Notch", 128);
+        BOOL ok = Shell_NotifyIconW(NIM_ADD, &nid);
+        nid.uVersion = NOTIFYICON_VERSION_4; // clicks arrive as LOWORD(lParam) events, not raw mouse messages
+        Shell_NotifyIconW(NIM_SETVERSION, &nid);
+        return ok;
+    }
+
+    void RemoveTray() {
+        NOTIFYICONDATAW nid = { sizeof(nid) };
+        nid.hWnd = hWnd;
+        nid.uID = 1;
+        Shell_NotifyIconW(NIM_DELETE, &nid);
+        if (trayIcon) DestroyIcon(trayIcon);
+        trayIcon = NULL;
+    }
+
+    // Right-click on the notch (fromTray false) or on its tray icon: the same menu, the tray adds hide/show
+    void ShowMenu(bool fromTray) {
+        POINT pt;
+        GetCursorPos(&pt);
+        HMENU menu = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING, MENU_CONFIG, L"Configuración");
+        if (fromTray) AppendMenuW(menu, MF_STRING, MENU_HIDE, hiddenByUser ? L"Mostrar notch" : L"Ocultar notch");
+        else AppendMenuW(menu, MF_STRING, MENU_EXPAND, expanded ? L"Colapsar Notch" : L"Expandir Notch");
+        AppendMenuW(menu, MF_STRING, MENU_MOVE, L"Mover al otro monitor");
+        AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(menu, MF_STRING, MENU_QUIT, L"Salir de Capri Notch");
+
+        SetForegroundWindow(hWnd); // without this the menu stays open when the user clicks elsewhere
+        int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
+        DestroyMenu(menu);
+        PostMessageW(hWnd, WM_NULL, 0, 0); // and this one closes it properly after a click
+
+        if (cmd == MENU_CONFIG) OpenSettings(SettingsWindow::SEC_GENERAL);
+        else if (cmd == MENU_EXPAND) SetExpanded(!expanded);
+        else if (cmd == MENU_HIDE) { hiddenByUser = !hiddenByUser; ApplyVisibility(); }
+        else if (cmd == MENU_MOVE) SwitchMonitor();
+        else if (cmd == MENU_QUIT) DestroyWindow(hWnd);
     }
 
     void AllocBuffer(int w, int h) {
@@ -189,6 +331,13 @@ public:
         int stride = bufWidth * 4;
         int pw = (int)(currentWidth * scale);
         int ph = (int)(currentHeight * scale);
+
+        auto dotOf = [](const SyncAccount& a) {
+            return !a.connected ? CapriUI::SYNC_OFF : a.syncing ? CapriUI::SYNC_BUSY : !a.error.empty() ? CapriUI::SYNC_ERR : CapriUI::SYNC_ON;
+        };
+        ui.syncDot[1] = dotOf(google);
+        ui.syncDot[2] = dotOf(outlook);
+        ui.linkGoogle = ics.account.find(L"google") != std::wstring::npos; // the link's host decides its agenda mark, G or O
 
         // Render UI with correct scanline stride
         ui.Render(pvBits, stride, pw, ph, scale, expanded, activeTab, pomo, todo, events, media, ai, wakeEngine);
@@ -253,7 +402,7 @@ public:
         if (!GetSystemPowerStatus(&ps) || (ps.BatteryFlag & 128) || ps.ACLineStatus == 255) return;
         int prev = lastAc;
         lastAc = ps.ACLineStatus;
-        if (prev < 0 || prev == lastAc) return;
+        if (prev < 0 || prev == lastAc || !g_settings.chargerNotice) return;
         ui.notice = lastAc ? L"Cargando" : L"Sin cargador";
         ui.noticeRight = ps.BatteryLifePercent == 255 ? L"" : std::to_wstring(ps.BatteryLifePercent) + L"%";
         ui.noticeIcon = lastAc ? L"" : L"";
@@ -289,13 +438,14 @@ public:
             ui.noticeIcon = L"";
             ui.noticeColor = Gdiplus::Color(255, c.r, c.g, c.b);
             ui.noticeUntil = GetTickCount64() + 8000;
-            MessageBeep(MB_ICONASTERISK);
+            if (g_settings.reminderSound) MessageBeep(MB_ICONASTERISK);
             break; // shortcut: one reminder per minute; the later of two simultaneous events is skipped, upgrade to queueing them
         }
     }
 
     void OnSecondTick() {
         CheckReminders();
+        CheckFullscreen();
         pomo.Tick();
         media.DetectActiveTrack();
         UpdateTargetDimensions(); // playback pause/resume switches the collapsed notch between lyric and title width
@@ -329,7 +479,7 @@ public:
 
     // A click beside the notch (not on it) tucks it away so the spot underneath stays usable; not while lyrics are on.
     void OnNearClick(POINT pt) {
-        if (tucked || media.showLyrics) return;
+        if (tucked || media.showLyrics || !g_settings.tuckOnClick) return;
         RECT win, zone = NearZone();
         GetWindowRect(hWnd, &win);
         if (!PtInRect(&win, pt) && PtInRect(&zone, pt)) SetTucked(true);
@@ -368,6 +518,7 @@ public:
         ApplyTitleTokens(e, CapriUI::TodayKey()); // also trims the title
         if (e.title.empty()) return;
         ui.calEvent = (int)(ui.popEdit >= 0 ? events.Update(ui.popEdit, e) : events.Add(e));
+        ScheduleSync(e.src);
         ui.CalSelect(e.date);
         ClosePopup();
     }
@@ -413,6 +564,7 @@ public:
 
     void OpenPopup(CalEvent e, int editIdx) {
         if (e.minute >= 0 && e.end <= e.minute) e.end = (std::min)(1440, e.minute + 60); // no end stored = drawn as an hour
+        if (editIdx < 0) { e.color = g_settings.defaultCategory; e.alert = g_settings.defaultAlert; } // new events take the defaults
         ui.popEv = e;
         ui.popEdit = editIdx;
         ui.popFocus = 0;
@@ -430,10 +582,13 @@ public:
         case C::HIT_POP_BACK: return ClosePopup();
         case C::HIT_POP_CANCEL: return ClosePopup();
         case C::HIT_POP_SAVE: return SavePopup();
-        case C::HIT_POP_DELETE:
+        case C::HIT_POP_DELETE: {
+            int src = events.events[ui.popEdit].src;
             events.Remove(ui.popEdit);
             ui.calEvent = -1;
+            ScheduleSync(src);
             return ClosePopup();
+        }
         case C::HIT_POP_TITLE: ui.popFocus = 0; return;
         case C::HIT_POP_NOTES: ui.popFocus = 1; return;
         case C::HIT_POP_DATE: e.date = h.a; return;
@@ -451,6 +606,7 @@ public:
         case C::HIT_POP_REPEAT: e.repeat = h.a; return;
         case C::HIT_POP_COLOR: e.color = h.a; return;
         case C::HIT_POP_ALERT: e.alert = h.a; return;
+        case C::HIT_POP_SOURCE: e.src = h.a; return;
         }
     }
 
@@ -499,12 +655,185 @@ public:
         if (h.kind == C::HIT_DELETE) {
             events.Remove(ui.calEvent);
             ui.calEvent = -1;
+            ScheduleSync(e.src);
             return;
         }
         if (h.kind == C::HIT_COLOR) e.color = h.a;
         else if (h.kind == C::HIT_MOVE) e.date = TmKey(KeyTm(e.date, h.a));
         else if (h.kind == C::HIT_REPEAT) e.repeat = (e.repeat + 1) % 5;
+        ScheduleSync(e.src);
         ui.calEvent = (int)events.Update(ui.calEvent, e);
+    }
+
+    // ---- calendar sync: the two services, their sign-in and timers, and the worker's results (sync.h)
+    SyncAccount google, outlook, ics; // Google (src 1), Outlook (src 2) and the calendar link (src 3, read-only)
+
+    SyncAccount& Account(int src) { return src == 1 ? google : src == 2 ? outlook : ics; }
+
+    void LoadProviders() { outlook.prov = OutlookProvider(LoadSyncConfig()); }
+
+    void InitSync() {
+        google.src = 1;
+        google.tokenFile = AppDataFile(L"capri_sync_google.bin");
+        outlook.src = 2;
+        outlook.tokenFile = AppDataFile(L"capri_sync_outlook.bin");
+        ics.src = 3;
+        ics.tokenFile = AppDataFile(L"capri_sync_ics.bin");
+        // a file the bridge cannot read (the old OAuth format included) is removed: Google connects again with the script
+        if (!LoadBridgeFile(google.tokenFile, google.bridgeUrl, google.bridgeToken, google.account)) DeleteFileW(google.tokenFile.c_str());
+        google.connected = !google.bridgeUrl.empty();
+        outlook.connected = LoadAccountToken(outlook.tokenFile, outlook.refresh, outlook.account);
+        ics.connected = LoadIcsFile(ics.tokenFile, ics.link);
+        ics.account = IcsHost(ics.link);
+        SyncAll();
+    }
+
+    void SyncAll() {
+        SyncOne(google);
+        SyncOne(outlook);
+        SyncOne(ics);
+    }
+
+    // Starts a sync of a connected account; asked for while one runs, it runs once more when that one ends
+    void SyncOne(SyncAccount& a) {
+        if (!a.connected) return;
+        if (a.syncing) { a.again = true; return; }
+        std::vector<CalEvent> pending, series;
+        for (const CalEvent& e : events.events) {
+            if (e.src != a.src) continue;
+            if (e.dirty) pending.push_back(e);
+            if (e.repeat) series.push_back(e);
+        }
+        int today = CapriUI::TodayKey();
+        StartSync(hWnd, a, false, pending, series, TmKey(KeyTm(today, -30)), TmKey(KeyTm(today, 180)));
+        UpdateDisplay();
+    }
+
+    // A change to a remote event goes up 2 s later (each change restarts the wait)
+    void ScheduleSync(int src) {
+        if (src == 1 || src == 2) SetTimer(hWnd, TIMER_SYNC_SOON, 2000, NULL); // a link event is never uploaded
+    }
+
+    // The pill's banner for sync news; the caller repaints
+    void Notify(const wchar_t* icon, const std::wstring& text, Gdiplus::Color color, ULONGLONG ms) {
+        ui.notice = text;
+        ui.noticeRight.clear();
+        ui.noticeIcon = icon;
+        ui.noticeColor = color;
+        ui.noticeUntil = GetTickCount64() + ms;
+    }
+
+    // A change to the event list that the user did not click (a sync): the selected and edited events are found again afterwards
+    template <class F> void ChangeEvents(F change) {
+        CalEvent sel{}, edit{};
+        bool hasSel = ui.calEvent >= 0 && ui.calEvent < (int)events.events.size();
+        bool hasEdit = ui.popEdit >= 0 && ui.popEdit < (int)events.events.size();
+        if (hasSel) sel = events.events[ui.calEvent];
+        if (hasEdit) edit = events.events[ui.popEdit];
+        change();
+        events.Save();
+        // The same event: by local uid, or by remote id (a merged copy gets a new uid)
+        auto find = [&](bool has, const CalEvent& want) {
+            for (int i = 0; has && i < (int)events.events.size(); ++i) {
+                const CalEvent& e = events.events[i];
+                if (e.uid == want.uid || (!want.rid.empty() && e.src == want.src && e.rid == want.rid)) return i;
+            }
+            return -1;
+        };
+        ui.calEvent = find(hasSel, sel);
+        ui.popEdit = find(hasEdit, edit); // gone: the draft saves as a new event rather than being lost
+    }
+
+    // The worker's answer: applies the pushes and the pulled window, then the account's state and the banner
+    void OnSyncDone(int src, SyncResult* raw) {
+        std::unique_ptr<SyncResult> r(raw);
+        SyncAccount& a = Account(src);
+        a.syncing = false;
+        const std::wstring name = src == 1 ? L"Google" : src == 2 ? L"Outlook" : L"Enlace";
+        const Gdiplus::Color red(255, 239, 68, 68);
+        if (r->gen == a.gen) { // an answer from a connection that was removed meanwhile is dropped
+            std::wstring prevError = a.error;
+            std::string prevRefresh = a.refresh;
+            a.error = r->error;
+            if (r->loggedIn) a.connected = true;
+            if (r->revoked) {
+                a.connected = false;
+                DeleteFileW(a.tokenFile.c_str());
+            }
+            if (!r->refresh.empty()) a.refresh = r->refresh;
+            if (!r->account.empty()) a.account = r->account;
+            a.access = r->access;
+            a.expiresAt = r->expiresAt;
+            if (src == 1) {
+                if (a.connected && r->loggedIn) SaveBridgeAccount(a);
+            } else if (src == 2) {
+                if (a.connected && (r->loggedIn || r->refresh != prevRefresh)) SaveAccountToken(a.tokenFile, a.refresh, a.account);
+            } else if (a.connected && r->loggedIn) {
+                SaveIcsFile(a.tokenFile, a.link);
+            }
+            if (a.connected && r->error.empty()) a.lastSync = GetTickCount64();
+            if (!r->pushes.empty() || r->pulled) {
+                ChangeEvents([&] {
+                    ApplyPush(events.events, r->pushes);
+                    if (r->pulled) MergePull(events.events, src, r->fromKey, r->toKey, r->fetched);
+                });
+            }
+            if (r->loggedIn) Notify(L"", name + L" conectado", Gdiplus::Color(255, 74, 222, 128), 3000);
+            else if (r->revoked) Notify(L"", L"Vuelve a conectar " + name, red, 6000);
+            else if (r->login) Notify(L"", L"No se pudo conectar " + name, red, 6000);
+            else if (!r->error.empty() && r->error != prevError) Notify(L"", L"Error al sincronizar " + name, red, 6000);
+        }
+        if (a.again) {
+            a.again = false;
+            SyncOne(a);
+        }
+        UpdateDisplay();
+    }
+
+    // Connect. Google: its URL and key are checked by the bridge's first call (worker). Outlook: needs the ID in capri_sync.ini;
+    // without it the commented template is created and opened to fill in.
+    void ConnectSync(SyncAccount& a) {
+        if (a.connected || a.syncing) return;
+        if (a.src == 1 && !IsBridgeUrl(a.bridgeUrl)) { Notify(L"", L"La URL debe terminar en /exec (la de tu aplicación web)", Gdiplus::Color(255, 251, 191, 36), 6000); return UpdateDisplay(); }
+        if (a.src == 1 && a.bridgeToken.empty()) { Notify(L"", L"Copia primero el script", Gdiplus::Color(255, 251, 191, 36), 6000); return UpdateDisplay(); }
+        if (a.src == 3 && !NormalizeIcsLink(a.link)) { Notify(L"", L"El enlace debe empezar por https:// o webcal://", Gdiplus::Color(255, 251, 191, 36), 6000); return UpdateDisplay(); }
+        LoadProviders();
+        if (a.src == 2 && a.prov.clientId.empty()) {
+            CreateSyncIni(SyncIniPath());
+            ShellExecuteW(hWnd, L"open", L"notepad.exe", SyncIniPath().c_str(), NULL, SW_SHOWNORMAL);
+            Notify(L"", L"Configura capri_sync.ini", Gdiplus::Color(255, 251, 191, 36), 6000);
+            return UpdateDisplay();
+        }
+        a.error.clear();
+        int today = CapriUI::TodayKey();
+        StartSync(hWnd, a, true, {}, {}, TmKey(KeyTm(today, -30)), TmKey(KeyTm(today, 180)));
+        UpdateDisplay();
+    }
+
+    // Disconnect: local changes not uploaded yet are asked about first; the service's events leave the calendar.
+    // The events of a removed service are only dropped here, after the question.
+    void DisconnectSync(SyncAccount& a) {
+        int pending = 0;
+        for (const CalEvent& e : events.events) pending += e.src == a.src && e.dirty != 0;
+        if (pending && MessageBoxW(hWnd, (L"Hay " + std::to_wstring(pending) + L" cambios sin subir. ¿Desconectar igualmente?").c_str(),
+                                   L"Capri Notch", MB_YESNO | MB_ICONWARNING) != IDYES) return;
+        DeleteFileW(a.tokenFile.c_str());
+        ChangeEvents([&] {
+            auto& v = events.events;
+            v.erase(std::remove_if(v.begin(), v.end(), [&](const CalEvent& e) { return e.src == a.src; }), v.end());
+        });
+        a.connected = false;
+        a.again = false;
+        a.gen++; // a sync still running for this connection is dropped when it ends
+        a.refresh.clear();
+        a.access.clear();
+        a.bridgeUrl.clear();
+        a.bridgeToken.clear();
+        a.link.clear();
+        a.account.clear();
+        a.error.clear();
+        a.lastSync = 0;
+        UpdateDisplay();
     }
 
     void OnClick(int x, int y) {
@@ -521,6 +850,9 @@ public:
         // Hit-test in content space, which starts after the left shoulder
         x -= NOTCH_SHOULDER;
         int w = currentWidth - 2 * NOTCH_SHOULDER;
+
+        // Settings gear at the right end of the tab row (drawn on every tab; not while the event window covers the calendar)
+        if (!ui.calPop && y >= 8 && y <= 38 && x >= w - 44 && x <= w - 12) return OpenSettings(SettingsWindow::SectionOfTab(activeTab));
 
         // Icon tab row (y: 8 - 38)
         if (y >= 8 && y <= 38) {
@@ -663,6 +995,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (!g_App.CursorOver() && !g_App.ui.editing) g_App.SetExpanded(false); // typing keeps it open
         } else if (wParam == TIMER_TUCK) {
             g_App.OnTuckTick();
+        } else if (wParam == TIMER_SYNC) {
+            g_App.SyncAll();
+        } else if (wParam == TIMER_SYNC_SOON) {
+            KillTimer(hWnd, TIMER_SYNC_SOON);
+            g_App.SyncAll();
         }
         break;
 
@@ -674,7 +1011,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             tme.hwndTrack = hWnd;
             TrackMouseEvent(&tme);
             g_App.isTrackingMouse = true;
-            if (!g_App.expanded && !g_App.tucked) SetTimer(hWnd, TIMER_HOVER, HOVER_DELAY_MS, NULL);
+            if (!g_App.expanded && !g_App.tucked && g_settings.hoverOpen) SetTimer(hWnd, TIMER_HOVER, g_settings.hoverDelay, NULL);
         }
         KillTimer(hWnd, TIMER_LEAVE); // back inside before the grace period ran out
         break;
@@ -682,7 +1019,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_MOUSELEAVE:
         g_App.isTrackingMouse = false;
         KillTimer(hWnd, TIMER_HOVER);
-        if (g_App.expanded) SetTimer(hWnd, TIMER_LEAVE, LEAVE_DELAY_MS, NULL);
+        if (g_App.expanded) SetTimer(hWnd, TIMER_LEAVE, g_settings.leaveDelay, NULL);
         break;
 
     case WM_NEAR_CLICK: {
@@ -690,6 +1027,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_App.OnNearClick(pt);
         break;
     }
+
+    case WM_SYNC_DONE:
+        g_App.OnSyncDone((int)wParam, (SyncResult*)lParam);
+        break;
 
     case WM_LBUTTONDOWN: {
         int x = (int)(LOWORD(lParam) / g_App.scale);
@@ -728,28 +1069,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_App.UpdateDisplay();
         break;
 
-    case WM_RBUTTONUP: {
-        POINT pt;
-        GetCursorPos(&pt);
-        HMENU hMenu = CreatePopupMenu();
-        AppendMenuW(hMenu, MF_STRING, 1001, g_App.expanded ? L"Colapsar Notch" : L"Expandir Notch");
-        AppendMenuW(hMenu, MF_STRING, 1002, L"Mover al otro monitor");
-        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenuW(hMenu, MF_STRING, 1003, L"Salir de Capri Notch");
-
-        SetForegroundWindow(hWnd);
-        int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
-        DestroyMenu(hMenu);
-
-        if (cmd == 1001) {
-            g_App.SetExpanded(!g_App.expanded);
-        } else if (cmd == 1002) {
-            g_App.SwitchMonitor();
-        } else if (cmd == 1003) {
-            DestroyWindow(hWnd);
-        }
+    case WM_RBUTTONUP:
+        g_App.ShowMenu(false);
         break;
-    }
+
+    case WM_TRAY: // NOTIFYICON_VERSION_4: the event is in LOWORD(lParam)
+        if (LOWORD(lParam) == WM_LBUTTONUP || LOWORD(lParam) == NIN_SELECT || LOWORD(lParam) == NIN_KEYSELECT) g_App.OpenSettings(SettingsWindow::SEC_GENERAL);
+        else if (LOWORD(lParam) == WM_CONTEXTMENU) g_App.ShowMenu(true);
+        break;
+
+    case WM_SETTINGS_CHANGED:
+        g_App.ApplySettings();
+        break;
 
     case WM_USER + 100: // Audio wake trigger
         g_App.SetExpanded(true);
@@ -765,10 +1096,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
 
     case WM_DESTROY:
+        g_App.RemoveTray();
         PostQuitMessage(0);
         break;
 
     default:
+        if (msg == g_taskbarCreated) { // Explorer restarted and dropped the tray icon
+            g_App.AddTray();
+            return 0;
+        }
         return DefWindowProc(hWnd, msg, wParam, lParam);
     }
     return 0;
@@ -818,6 +1154,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
     if (dbg) { fprintf(dbg, "RegisterClass OK\n"); fflush(dbg); }
+    g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
 
     // Without this Windows bitmap-stretches the notch on scaled displays (125%, 150%...) and it looks blurry
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);

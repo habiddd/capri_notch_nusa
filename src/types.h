@@ -3,7 +3,9 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <iterator>
 #include <shlobj.h>
+#include "net.h"
 
 // %LOCALAPPDATA%\name, or the working directory when that folder is unknown
 inline std::wstring AppDataFile(const wchar_t* name) {
@@ -12,26 +14,31 @@ inline std::wstring AppDataFile(const wchar_t* name) {
     return name;
 }
 
-// UTF-8 bytes: wofstream's default "C" locale fails on any accent and truncates the rest of the file.
 // Written to a temp file and swapped in, so a crash mid-write never leaves a half file.
-inline void WriteUtf8File(const std::wstring& path, const std::wstring& text) {
-    std::string bytes(WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), NULL, 0, NULL, NULL), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), &bytes[0], (int)bytes.size(), NULL, NULL);
+inline bool WriteBytesFile(const std::wstring& path, const std::string& bytes) {
     std::wstring tmp = path + L".tmp";
     {
         std::ofstream out(tmp.c_str(), std::ios::binary);
-        if (!(out << bytes)) return;
+        if (!(out << bytes)) return false;
     }
-    MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    return MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
 }
 
 // False when there is no file yet.
-inline bool ReadUtf8File(const std::wstring& path, std::wstring& text) {
+inline bool ReadBytesFile(const std::wstring& path, std::string& bytes) {
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in.is_open()) return false;
-    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    text.assign(MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(), (int)bytes.size(), NULL, 0), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, bytes.c_str(), (int)bytes.size(), &text[0], (int)text.size());
+    bytes.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return true;
+}
+
+// UTF-8 bytes: wofstream's default "C" locale fails on any accent and truncates the rest of the file.
+inline void WriteUtf8File(const std::wstring& path, const std::wstring& text) { WriteBytesFile(path, Utf8(text)); }
+
+inline bool ReadUtf8File(const std::wstring& path, std::wstring& text) {
+    std::string bytes;
+    if (!ReadBytesFile(path, bytes)) return false;
+    text = Wide(bytes);
     return true;
 }
 

@@ -1,6 +1,6 @@
 #pragma once
 #include <windows.h>
-#include <winhttp.h>
+#include "net.h"
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -74,26 +74,6 @@ static bool IsVocalLine(std::wstring text) {
            text != L"interlude" && text != L"intro" && text != L"outro" && text != L"solo";
 }
 
-static std::wstring UrlEncode(const std::wstring& s) {
-    int n = WideCharToMultiByte(CP_UTF8, 0, s.c_str(), (int)s.size(), NULL, 0, NULL, NULL);
-    std::string utf8(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, s.c_str(), (int)s.size(), &utf8[0], n, NULL, NULL);
-    std::wstring out;
-    wchar_t hex[4];
-    for (unsigned char c : utf8) {
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') out += (wchar_t)c;
-        else { swprintf(hex, 4, L"%%%02X", c); out += hex; }
-    }
-    return out;
-}
-
-static void AppendUtf8(std::string& s, unsigned cp) {
-    if (cp < 0x80) s += (char)cp;
-    else if (cp < 0x800) { s += (char)(0xC0 | (cp >> 6)); s += (char)(0x80 | (cp & 0x3F)); }
-    else if (cp < 0x10000) { s += (char)(0xE0 | (cp >> 12)); s += (char)(0x80 | ((cp >> 6) & 0x3F)); s += (char)(0x80 | (cp & 0x3F)); }
-    else { s += (char)(0xF0 | (cp >> 18)); s += (char)(0x80 | ((cp >> 12) & 0x3F)); s += (char)(0x80 | ((cp >> 6) & 0x3F)); s += (char)(0x80 | (cp & 0x3F)); }
-}
-
 // First non-empty string value of `field` in a JSON body. Enough for LRCLIB's flat objects and arrays of them.
 static bool JsonString(const std::string& body, const char* field, std::wstring& out) {
     std::string needle = std::string("\"") + field + "\":";
@@ -119,41 +99,14 @@ static bool JsonString(const std::string& body, const char* field, std::wstring&
             } else if (e != 'r' && e != 'b' && e != 'f') utf8 += e; // \" \\ \/
         }
         if (i >= body.size() || utf8.empty()) continue;
-        int n = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), NULL, 0);
-        out.assign(n, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &out[0], n);
+        out = Wide(utf8);
         return true;
     }
     return false;
 }
 
-// GET https://lrclib.net<path>; body capped at 1 MB, 8 s timeouts.
 static bool LrclibGet(const std::wstring& path, std::string& body, DWORD& code) {
-    bool ok = false;
-    code = 0;
-    HINTERNET s = WinHttpOpen(L"CapriNotch/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!s) return false;
-    WinHttpSetTimeouts(s, 5000, 5000, 8000, 8000);
-    HINTERNET c = WinHttpConnect(s, L"lrclib.net", INTERNET_DEFAULT_HTTPS_PORT, 0);
-    HINTERNET r = c ? WinHttpOpenRequest(c, L"GET", path.c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : NULL;
-    if (r && WinHttpSendRequest(r, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(r, NULL)) {
-        DWORD size = sizeof(code);
-        WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &code, &size, WINHTTP_NO_HEADER_INDEX);
-        ok = true;
-        DWORD avail = 0;
-        while (WinHttpQueryDataAvailable(r, &avail) && avail > 0) {
-            if (body.size() + avail > (1u << 20)) { ok = false; break; }
-            size_t old = body.size();
-            body.resize(old + avail);
-            DWORD read = 0;
-            if (!WinHttpReadData(r, &body[old], avail, &read)) { ok = false; break; }
-            body.resize(old + read);
-        }
-    }
-    if (r) WinHttpCloseHandle(r);
-    if (c) WinHttpCloseHandle(c);
-    WinHttpCloseHandle(s);
-    return ok;
+    return HttpsRequest(L"GET", L"lrclib.net", path, L"", "", body, code);
 }
 
 // Exact match first (title + artist + duration, like nabyscape); the search endpoint catches near-misses

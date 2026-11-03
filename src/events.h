@@ -16,7 +16,13 @@ struct CalEvent {
     std::wstring title;
     int alert = 10;  // minutes before the start: -1 none, 0 at start, 10, 30, 60
     std::wstring notes;
+    int src = 0;          // 0 Capri (local), 1 Google, 2 Outlook, 3 calendar link (ICS: read-only, only the colour is ours)
+    std::wstring rid;     // remote id ("" = not uploaded yet)
+    int dirty = 0;        // bits: 1 create, 2 update, 4 delete, 8 notes changed (waiting to be uploaded)
+    int rev = 0;          // local edit counter, not saved: a push result for an older rev does not clear newer edits
+    long long uid = 0;    // in-memory id, not saved; assigned by EventManager and MergePull
 };
+inline long long g_eventUid = 0;
 
 struct CalCategory { const wchar_t* name; BYTE r, g, b; };
 inline constexpr CalCategory CAL_CATS[] = {
@@ -193,22 +199,42 @@ public:
 
     // Returns the index the event ended up at
     size_t Add(const CalEvent& e) {
-        size_t at = Insert(e);
+        CalEvent n = e;
+        if (n.src == 1 || n.src == 2) n.dirty = 1; // a remote event made here is uploaded by the next sync; a link event never is
+        size_t at = Insert(n);
         Save();
         return at;
     }
 
     // shortcut: a repeating event is edited, moved and deleted as a whole series; upgrade to per-occurrence exceptions if needed
     size_t Update(size_t index, const CalEvent& e) {
-        if (index < events.size()) events.erase(events.begin() + index);
-        size_t at = Insert(e);
+        if (index < events.size() && events[index].src == 3) { // calendar link: read-only, only the colour is kept
+            events[index].color = e.color;
+            Save();
+            return index;
+        }
+        CalEvent n = e;
+        if (index < events.size()) {
+            const CalEvent& old = events[index];
+            n.uid = old.uid;
+            if (old.src) { // remote: a pending create stays a create; notes go up only when they changed
+                n.src = old.src;
+                n.rid = old.rid;
+                n.rev = old.rev + 1;
+                n.dirty = old.dirty | ((old.dirty & 1) ? 0 : 2) | (n.notes != old.notes ? 8 : 0);
+            }
+            events.erase(events.begin() + index);
+        }
+        size_t at = Insert(n);
         Save();
         return at;
     }
 
     void Remove(size_t index) {
-        if (index < events.size()) {
-            events.erase(events.begin() + index);
+        if (index < events.size() && events[index].src != 3) { // calendar link events are read-only
+            CalEvent& e = events[index];
+            if (e.src && !e.rid.empty()) { e.dirty |= 4; e.rev++; } // hidden now, deleted in the service on the next sync
+            else events.erase(events.begin() + index);
             Save();
         }
     }
@@ -216,22 +242,22 @@ public:
     // Indices of the events on `date` (repeats included): all-day first, then by start
     std::vector<size_t> On(int date) const {
         std::vector<size_t> out;
-        for (size_t i = 0; i < events.size(); ++i) if (Occurs(events[i], date)) out.push_back(i);
+        for (size_t i = 0; i < events.size(); ++i) if (!(events[i].dirty & 4) && Occurs(events[i], date)) out.push_back(i);
         std::stable_sort(out.begin(), out.end(), [&](size_t a, size_t b) { return events[a].minute < events[b].minute; });
         return out;
     }
 
-    // Lines are date|minute|end|color|repeat|alert|title, then a tab and the notes when there are any
+    // Lines are date|minute|end|color|repeat|alert|title, then title \t notes \t src \t dirty \t rid
     void Save() {
         std::wstring all;
         for (const auto& e : events)
             all += std::to_wstring(e.date) + L"|" + std::to_wstring(e.minute) + L"|" + std::to_wstring(e.end) + L"|" +
                    std::to_wstring(e.color) + L"|" + std::to_wstring(e.repeat) + L"|" + std::to_wstring(e.alert) + L"|" + e.title +
-                   (e.notes.empty() ? L"" : L"\t" + e.notes) + L"\n";
+                   L"\t" + e.notes + L"\t" + std::to_wstring(e.src) + L"\t" + std::to_wstring(e.dirty) + L"\t" + e.rid + L"\n";
         WriteUtf8File(storagePath, all);
     }
 
-    // Also reads the 5-number lines (alert 10) and the old date|minute|title lines; malformed ones are skipped.
+    // Also reads the 5-number lines (alert 10), the old date|minute|title lines and the tab-notes lines; malformed ones are skipped.
     // Only the first 6 fields are split, so a title like "5|x" in the current format is never read as a number.
     void Load() {
         events.clear();
@@ -265,20 +291,39 @@ public:
             } else {
                 continue;
             }
-            size_t tab = e.title.find(L'\t');
-            if (tab != std::wstring::npos) {
-                e.notes = e.title.substr(tab + 1);
-                e.title.erase(tab);
+            // title \t notes \t src \t dirty \t rid; older lines have no such tail, so their notes are everything after the first tab
+            std::vector<std::wstring> tf;
+            for (size_t s = 0;;) {
+                size_t q = e.title.find(L'\t', s);
+                tf.push_back(e.title.substr(s, q == std::wstring::npos ? q : q - s));
+                if (q == std::wstring::npos) break;
+                s = q + 1;
+            }
+            long sv = 0, dv = 0;
+            if (tf.size() == 5 && num(tf[2], sv) && num(tf[3], dv) && sv >= 0 && sv <= 3 && dv >= 0 && dv <= 15) {
+                e.title = tf[0];
+                e.notes = tf[1];
+                e.src = (int)sv;
+                e.dirty = (int)dv;
+                e.rid = tf[4];
+            } else {
+                size_t tab = e.title.find(L'\t');
+                if (tab != std::wstring::npos) {
+                    e.notes = e.title.substr(tab + 1);
+                    e.title.erase(tab);
+                }
             }
             if (e.title.empty() || e.date < 10000101 || e.minute < -1 || e.minute >= 1440 || e.end < -1 || e.end > 1440 ||
                 e.color < 0 || e.color >= CAL_CAT_COUNT || e.repeat < 0 || e.repeat > 4 ||
                 (e.alert != -1 && e.alert != 0 && e.alert != 10 && e.alert != 30 && e.alert != 60)) continue;
+            e.uid = ++g_eventUid;
             events.push_back(e);
         }
         std::stable_sort(events.begin(), events.end(), Before); // a hand-edited file may be out of order
     }
 private:
-    size_t Insert(const CalEvent& e) {
+    size_t Insert(CalEvent e) {
+        if (!e.uid) e.uid = ++g_eventUid;
         size_t at = std::upper_bound(events.begin(), events.end(), e, Before) - events.begin(); // index: insert invalidates iterators
         events.insert(events.begin() + at, e);
         return at;
