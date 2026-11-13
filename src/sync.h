@@ -171,6 +171,7 @@ inline std::string GoogleBody(const CalEvent& e, bool includeNotes, bool include
              "},\"end\":{\"dateTime\":" + JsonQuote(LocalIsoWithOffset(e.date, endMin)) + tz + "}";
     }
     b += ",\"reminders\":{\"useDefault\":false,\"overrides\":[";
+    // shortcut: only the main alert is uploaded, upgrade to one override per chosen alert if users rely on it
     if (e.alert >= 0) b += "{\"method\":\"popup\",\"minutes\":" + std::to_string(e.alert) + "}";
     b += "]}";
     if (includeRecurrence && e.repeat) b += std::string(",\"recurrence\":[\"RRULE:FREQ=") + FREQ[e.repeat] + "\"]";
@@ -292,6 +293,8 @@ inline void MergePull(std::vector<CalEvent>& ev, int src, int fromKey, int toKey
         if (it != local.end()) {
             if (it->second->dirty) continue;
             if (src != 1) f.color = it->second->color; // Outlook categories and link events have no colour of ours: keep the local one
+            // the extra alerts are ours: a pull keeps them, minus the one the service now uses as the main alert
+            f.moreAlerts = f.alert < 0 ? 0 : it->second->moreAlerts & ~AlertBit(f.alert);
         }
         f.src = src;
         f.uid = ++g_eventUid;

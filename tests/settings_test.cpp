@@ -25,23 +25,28 @@ int main() {
     assert(s.focusMin == 25 && s.breakMin == 5 && s.pomoSound && s.calDefaultView == 0 && s.defaultAlert == 10);
     assert(s.defaultCategory == 0 && s.reminderSound && s.syncMinutes == 5);
     assert(s.aiProvider == 0 && s.aiHost.empty() && s.aiPath == L"/v1/chat/completions" && s.aiModel.empty() && s.aiPort == 443 && s.aiHttps);
+    assert(s.sysTemps && s.sysPower && s.weatherAuto && s.weatherCityName.empty());
 
     // Round trip of every field, with an accent in a text field
     Settings w;
     w.startWithWindows = true; w.hoverOpen = false; w.hoverDelay = 450; w.leaveDelay = 1200; w.tuckOnClick = false; w.hideFullscreen = true;
     w.eyes = false; w.sleepMin = 7; w.equalizer = false; w.chargerNotice = false; w.pillLyrics = false;
     w.focusMin = 50; w.breakMin = 12; w.pomoSound = false;
-    w.calDefaultView = 2; w.defaultAlert = 30; w.defaultCategory = 4; w.reminderSound = false; w.syncMinutes = 15;
+    w.calDefaultView = 2; w.defaultAlert = 30; w.defaultMoreAlerts = 9; w.defaultCategory = 4; w.reminderSound = false; w.syncMinutes = 15;
+    w.tasksInCalendar = false;
     w.aiProvider = 3; w.aiHost = L"ia.ejemplo.es"; w.aiPath = L"/api/chat"; w.aiModel = L"modelo ñandú"; w.aiPort = 8443; w.aiHttps = false;
+    w.sysTemps = false; w.sysPower = false; w.weatherAuto = false; w.weatherCityName = L"Bogotá";
     assert(SaveSettings(ini, w));
     Settings r;
     assert(LoadSettings(ini, r));
     assert(r.startWithWindows && !r.hoverOpen && r.hoverDelay == 450 && r.leaveDelay == 1200 && !r.tuckOnClick && r.hideFullscreen);
     assert(!r.eyes && r.sleepMin == 7 && !r.equalizer && !r.chargerNotice && !r.pillLyrics);
     assert(r.focusMin == 50 && r.breakMin == 12 && !r.pomoSound);
-    assert(r.calDefaultView == 2 && r.defaultAlert == 30 && r.defaultCategory == 4 && !r.reminderSound && r.syncMinutes == 15);
+    assert(r.calDefaultView == 2 && r.defaultAlert == 30 && r.defaultMoreAlerts == 9 && r.defaultCategory == 4 && !r.reminderSound && r.syncMinutes == 15);
+    assert(!r.tasksInCalendar);
     assert(r.aiProvider == 3 && r.aiHost == L"ia.ejemplo.es" && r.aiPath == L"/api/chat" && r.aiModel == L"modelo ñandú");
     assert(r.aiPort == 8443 && !r.aiHttps);
+    assert(!r.sysTemps && !r.sysPower && !r.weatherAuto && r.weatherCityName == L"Bogotá");
 
     // Out-of-range, not in the list, garbage, unknown keys: the defaults, and the valid lines around them still count
     std::string bad = "hoverDelay=5000\r\nleaveDelay=50\r\nfocusMin=abc\r\nbreakMin=\r\nsyncMinutes=7\r\ndefaultAlert=5\r\n"
@@ -49,7 +54,7 @@ int main() {
     assert(WriteBytesFile(ini, bad));
     Settings b;
     assert(LoadSettings(ini, b));
-    assert(b.hoverDelay == 180 && b.leaveDelay == 300 && b.breakMin == 5 && b.defaultAlert == 10 && b.aiProvider == 0);
+    assert(b.hoverDelay == 180 && b.leaveDelay == 300 && b.breakMin == 5 && b.defaultAlert == 10 && b.aiProvider == 0 && b.defaultMoreAlerts == 0);
     assert(b.aiPort == 443 && b.sleepMin == 2 && b.hoverOpen && b.syncMinutes == 5 && b.focusMin == 25);
     assert(!b.eyes); // spaces around the value are trimmed
 

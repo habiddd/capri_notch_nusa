@@ -48,6 +48,8 @@ enum NotchTab {
     TAB_TASKS = 2,
     TAB_CALENDAR = 3,
     TAB_AI = 4,
+    TAB_WEATHER = 5,
+    TAB_SYSTEM = 6,
     TAB_COUNT
 };
 

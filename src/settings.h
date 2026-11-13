@@ -23,14 +23,21 @@ struct Settings {
     // Calendar
     int calDefaultView = 0;   // CapriUI::CalView
     int defaultAlert = 10;    // -1, 0, 10, 30, 60
+    int defaultMoreAlerts = 0; // the other default alerts as bits (see AlertMask in events.h)
     int defaultCategory = 0;  // index into CAL_CATS
     bool reminderSound = true;
+    bool tasksInCalendar = true; // dated tasks show in the calendar, calendar tasks in Tareas
     int syncMinutes = 5;      // 5, 15, 30
     // AI: presets fill the endpoint; the custom fields are used only by provider 3
     int aiProvider = 0;       // 0 OpenAI, 1 DeepSeek, 2 Ollama, 3 custom
     std::wstring aiHost, aiPath = L"/v1/chat/completions", aiModel;
     int aiPort = 443;
     bool aiHttps = true;
+    // Sistema: CPU and GPU temperatures, and battery watts, when Windows offers them
+    bool sysTemps = true, sysPower = true;
+    // Clima: the place is where the user is (Windows location, else IP) unless a city is typed (empty = automatic)
+    bool weatherAuto = true;
+    std::wstring weatherCityName;
 };
 
 inline Settings g_settings;
@@ -88,8 +95,10 @@ inline bool LoadSettings(const std::wstring& path, Settings& s) {
     flag(L"pomoSound", s.pomoSound);
     num(L"calDefaultView", s.calDefaultView, 0, 3);
     numIn(L"defaultAlert", s.defaultAlert, { -1, 0, 10, 30, 60 });
+    num(L"defaultMoreAlerts", s.defaultMoreAlerts, 0, 15);
     num(L"defaultCategory", s.defaultCategory, 0, 5);
     flag(L"reminderSound", s.reminderSound);
+    flag(L"tasksInCalendar", s.tasksInCalendar);
     numIn(L"syncMinutes", s.syncMinutes, { 5, 15, 30 });
     num(L"aiProvider", s.aiProvider, 0, 3);
     str(L"aiHost", s.aiHost);
@@ -97,6 +106,10 @@ inline bool LoadSettings(const std::wstring& path, Settings& s) {
     str(L"aiModel", s.aiModel);
     num(L"aiPort", s.aiPort, 1, 65535);
     flag(L"aiHttps", s.aiHttps);
+    flag(L"sysTemps", s.sysTemps);
+    flag(L"sysPower", s.sysPower);
+    flag(L"weatherAuto", s.weatherAuto);
+    str(L"weatherCityName", s.weatherCityName);
     return true;
 }
 
@@ -120,8 +133,10 @@ inline bool SaveSettings(const std::wstring& path, const Settings& s) {
     line(L"pomoSound", flag(s.pomoSound));
     line(L"calDefaultView", std::to_wstring(s.calDefaultView));
     line(L"defaultAlert", std::to_wstring(s.defaultAlert));
+    line(L"defaultMoreAlerts", std::to_wstring(s.defaultMoreAlerts));
     line(L"defaultCategory", std::to_wstring(s.defaultCategory));
     line(L"reminderSound", flag(s.reminderSound));
+    line(L"tasksInCalendar", flag(s.tasksInCalendar));
     line(L"syncMinutes", std::to_wstring(s.syncMinutes));
     line(L"aiProvider", std::to_wstring(s.aiProvider));
     line(L"aiHost", s.aiHost);
@@ -129,6 +144,10 @@ inline bool SaveSettings(const std::wstring& path, const Settings& s) {
     line(L"aiModel", s.aiModel);
     line(L"aiPort", std::to_wstring(s.aiPort));
     line(L"aiHttps", flag(s.aiHttps));
+    line(L"sysTemps", flag(s.sysTemps));
+    line(L"sysPower", flag(s.sysPower));
+    line(L"weatherAuto", flag(s.weatherAuto));
+    line(L"weatherCityName", s.weatherCityName);
     return WriteBytesFile(path, Utf8(t));
 }
 

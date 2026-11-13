@@ -1,3 +1,4 @@
+// g++ -std=c++17 -Wall tests/pill_test.cpp -o %TEMP%\pill_test.exe -static -static-libgcc -static-libstdc++ -lgdiplus -lgdi32 -lwinhttp -lwinmm -luser32 -lshell32 -lruntimeobject -lole32 -loleaut32 -lshcore -lws2_32 -lbcrypt -lcrypt32 -ldwmapi -lpsapi -lpdh -lpowrprof && %TEMP%\pill_test.exe
 #define _WIN32_WINNT 0x0A00 // same prelude as main.cpp: ui.h is not self-contained
 #include <windows.h>
 #include <roapi.h>
@@ -12,6 +13,8 @@
 #include "../src/ai_client.h"
 #include "../src/audio_wake.h"
 #include <cassert>
+#include "../src/settings.h"
+#include "../src/tabs.h"
 #include "../src/ui.h"
 
 int main() {

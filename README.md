@@ -25,11 +25,12 @@ Aplicación ultraligera de Dynamic Notch / Dynamic Island para Windows 11 escrit
 
 4. **📅 Calendario y Tareas (To-Do)**:
    - Calendario grande (`760x400 px`) con mini-mes, vistas **Agenda** (próximos 14 días), **Día**, **Semana** (rejilla horaria con bloques de duración) y **Mes**. Flechas y rueda del ratón avanzan o desplazan; clic en un hueco de la rejilla crea un evento ahí.
-   - **Nuevo evento** (botón de la barra lateral, hueco de la rejilla o lápiz de la tira inferior): ventana emergente con título, fecha (‹ ›, Hoy, Mañana), hora de inicio y fin (pasos de 15 min) o *Todo el día*, repetición, categoría, aviso (ninguno, al empezar, 10 min, 30 min, 1 h) y notas. Atajos: `Tab` cambia entre título y notas, `Enter` guarda, `Esc` cancela. Si cierras el panel con la ventana abierta, el borrador se conserva.
+   - **Nuevo evento** (botón de la barra lateral, hueco de la rejilla o lápiz de la tira inferior): ventana emergente con título, fecha (‹ ›, Hoy, Mañana), hora de inicio y fin (pasos de 15 min) o *Todo el día*, repetición, categoría, avisos (varios a la vez, ver abajo) y notas. Atajos: `Tab` cambia entre título y notas, `Enter` guarda, `Esc` cancela. Si cierras el panel con la ventana abierta, el borrador se conserva.
    - El título entiende lenguaje natural al guardar: `Dentista mañana 15:30-16:30 #salud cada semana`.
      Hora `15:30`, `15:30-16:30` o `15h`; fecha `hoy`, `mañana`, `pasado mañana`, un día de la semana o `15/11`; categoría `#trab`, `#salud`...; repetición `diario`, `semanal`, `mensual`, `anual` (o `cada día/semana/mes/año`).
    - 6 categorías con color (General, Trabajo, Personal, Salud, Estudio, Social) que se pueden ocultar con un clic. Un evento seleccionado se edita (ventana), mueve de día, recolorea, repite o borra desde la tira inferior (los repetidos cambian en toda la serie).
-   - Recordatorio en la píldora según el aviso del evento (antes y a la hora; 8 s y un pitido).
+   - Varios avisos por evento (ninguno, al empezar, 10 min, 30 min, 1 h; se pueden elegir a la vez). Recordatorio en la píldora según cada aviso (8 s y un pitido).
+   - Tareas con fecha: `Informe mañana 10:00` escrito en el campo de Tareas crea un evento marcado como tarea (con hora o sin ella: sin hora, la fecha basta). Aparece en Tareas con su casilla y en el calendario con ○ (✓ cuando está hecha). El botón **Tarea** de la ventana del evento convierte en tarea los eventos nuevos y los de Capri; los eventos que ya están en Google u Outlook no pueden convertirse. Las tareas son solo de Capri y nunca se suben a Google u Outlook. Se pueden ocultar en el calendario desde Configuración → Calendario.
    - Los eventos se guardan en `%LOCALAPPDATA%\capri_events.txt` (los formatos antiguos se siguen leyendo; las notas van tras un tabulador).
    - Lista interactiva de tareas con casillas de verificación persistidas localmente en disco.
 
@@ -41,6 +42,10 @@ Aplicación ultraligera de Dynamic Notch / Dynamic Island para Windows 11 escrit
    - Se instala en disco local (`%LOCALAPPDATA%\CapriNotch\models\whistle.cact`, 16.9 MB).
    - **Carga bajo demanda (Lazy-Loading)**: Al arrancar la app consume **0 MB en RAM**. Solo se carga a memoria cuando el usuario presiona el botón en la pestaña de IA.
    - Al desactivarlo con el mismo botón, libera inmediatamente los 16.9 MB de la memoria y devuelve las páginas al sistema operativo.
+
+7. **Clima y sistema (pestañas nuevas)**:
+   - **Clima**: temperatura, sensación térmica, humedad, viento y máxima/mínima de hoy para tu ubicación: la de Windows si la tienes activada; si no, una aproximada por tu IP ([ipwho.is](https://ipwho.is)), o la ciudad que escribas en Configuración → Clima. Usa la API abierta [Open-Meteo](https://open-meteo.com), sin clave: la ciudad que escribes se envía a su buscador de ubicaciones, y a Open-Meteo van las coordenadas. Con la ubicación automática y la de Windows desactivada, [ipwho.is](https://ipwho.is) ve tu IP. Todo ello solo mientras la pestaña Clima está abierta, como mucho cada 15 minutos.
+   - **Sistema**: uso de CPU (con su gráfica del último minuto y su temperatura), temperatura de la GPU, memoria, espacio libre en C:, batería y los vatios que entran o salen de ella. Solo se mide mientras la pestaña Sistema está abierta.
 
 ---
 
@@ -103,6 +108,7 @@ Samsung no tiene API pública. En el móvil, abre **Samsung Calendar → Ajustes
 - Ventana: desde 30 días atrás hasta 180 días después. Fuera de ella no se descarga nada.
 - Cada 5 minutos, y 2 segundos después de editar un evento sincronizado.
 - Si cambias un evento y aún no se ha subido, gana tu cambio hasta que se suba.
+- Varios avisos: solo el más largo se sube a Google y Outlook; los demás avisan solo en Capri.
 
 ### Qué no se sincroniza
 - Calendarios que no son el principal, invitados, lugar y archivos adjuntos.
@@ -124,8 +130,10 @@ El menú del icono de la bandeja tiene **Configuración**, **Ocultar notch** / *
 - **Píldora**: ojos, dormir tras N minutos sin uso, ecualizador, aviso del cargador y letra en la píldora.
 - **Música**: la misma opción de letra y un recordatorio de que las letras son de LRCLIB.
 - **Pomodoro**: duración de enfoque (5 a 90 min) y descanso (1 a 30 min), y sonido al terminar. Con el temporizador parado, el cambio se aplica ya; en marcha, a partir del siguiente ciclo.
-- **Calendario**: vista inicial, aviso y categoría por defecto para los eventos nuevos, y sonido de recordatorios.
+- **Calendario**: vista inicial, avisos y categoría por defecto para los eventos nuevos, sonido de recordatorios y tareas con fecha en el calendario.
 - **Cuentas**: estado de Google, Outlook y el enlace ICS, con Conectar, Desconectar y Sincronizar ahora. Google: copiar el script y pegar la URL de la aplicación web (ver "Sincronizar calendario"). El ID de Microsoft se guarda en `capri_sync.ini`. Intervalo de sincronización de 5, 15 o 30 min.
+- **Clima**: detectar mi ubicación (la de Windows o, si no, la aproximada por IP) o una ciudad escrita; con el campo vacío es automática.
+- **Sistema**: temperaturas de CPU y GPU, y potencia de la batería, cuando Windows las ofrece.
 - **IA**: proveedor (OpenAI, DeepSeek, Ollama local o Personalizado), modelo y clave de API. Con Personalizado se editan también el servidor, la ruta, el puerto y HTTPS. Ollama no necesita clave.
 - **Acerca de**: versión, memoria en uso, abrir la carpeta de datos y salir.
 

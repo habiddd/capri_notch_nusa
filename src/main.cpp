@@ -4,7 +4,10 @@
 #include <propidl.h>
 #include <gdiplus.h>
 #include <cstdio>
+#include <objbase.h>
+#include <locationapi.h>
 #include "types.h"
+#include "tabs.h"
 #include "pomodoro.h"
 #include "todo.h"
 #include "events.h"
@@ -27,6 +30,7 @@
 #define TIMER_SYNC_SOON 9 // one-shot, 2 s after a change to a remote event: uploads it without waiting for the timer
 #define WM_NEAR_CLICK (WM_USER + 102) // posted by the mouse hook with the screen point of every left click
 #define WM_TRAY (WM_USER + 111)       // the tray icon's callback (NOTIFYICON_VERSION_4: LOWORD(lParam) is the event)
+#define WM_WEATHER (WM_USER + 104)    // the forecast thread's answer: lParam a WeatherReply* that the UI thread owns (WeatherWork)
 #define MENU_EXPAND 1001
 #define MENU_MOVE 1002
 #define MENU_QUIT 1003
@@ -41,6 +45,71 @@ constexpr int NEAR_ZONE = 60;       // px around the pill where a click tucks it
 // Pixel buffer sized for the largest notch (calendar tab, or the lyrics aside), in logical units
 constexpr int BUF_W = (std::max)(LYRICS_PANEL_W, CAL_PANEL_W) + 2 * NOTCH_SHOULDER;
 constexpr int BUF_H = CAL_POP_H;
+
+// The forecast worker's answer, carried to the UI thread (WM_WEATHER) as a heap object
+struct WeatherReply { bool located = false; bool net = false; std::wstring place; double lat = 0, lon = 0; bool ok = false; std::string body; };
+
+// Windows Location API (needs location services on). Blocking: worker thread only. Waits up to about 3 s for a first fix.
+static bool WindowsLocation(double& lat, double& lon) {
+    HRESULT init = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    bool got = false;
+    ILocation* loc = NULL;
+    if (SUCCEEDED(CoCreateInstance(CLSID_Location, NULL, CLSCTX_INPROC_SERVER, IID_ILocation, (void**)&loc))) {
+        LOCATION_REPORT_STATUS status = REPORT_NOT_SUPPORTED;
+        for (int i = 0; i < 12; ++i) {
+            loc->GetReportStatus(IID_ILatLongReport, &status);
+            if (status == REPORT_RUNNING || status == REPORT_ACCESS_DENIED || status == REPORT_NOT_SUPPORTED) break;
+            Sleep(250);
+        }
+        ILocationReport* rep = NULL;
+        ILatLongReport* ll = NULL;
+        if (status == REPORT_RUNNING && SUCCEEDED(loc->GetReport(IID_ILatLongReport, &rep)) &&
+            SUCCEEDED(rep->QueryInterface(IID_ILatLongReport, (void**)&ll))) {
+            got = SUCCEEDED(ll->GetLatitude(&lat)) && SUCCEEDED(ll->GetLongitude(&lon));
+            ll->Release();
+        }
+        if (rep) rep->Release();
+        loc->Release();
+    }
+    if (SUCCEEDED(init)) CoUninitialize();
+    return got;
+}
+
+// The forecast worker: where the user is, when that is not known yet, then the forecast for it. Blocking, so it runs on its
+// own thread with copies only; the answer goes back as one WeatherReply.
+static void WeatherWork(HWND hwnd, WeatherReply r, bool autoOn, std::wstring city) {
+    std::string resp;
+    DWORD code = 0;
+    Json j;
+    if (!r.located && !city.empty()) { // a city typed by the user: when it is not found there is no automatic fallback
+        if (HttpsRequest(L"GET", L"geocoding-api.open-meteo.com", L"/v1/search?name=" + UrlEncode(city) + L"&count=1&language=es", L"", "", resp, code) &&
+            (r.net = true) && code == 200 && JsonParse(resp, j) && j["results"][0]["latitude"].t == Json::Num) {
+            r.located = true;
+            r.lat = j["results"][0]["latitude"].n;
+            r.lon = j["results"][0]["longitude"].n;
+            r.place = j["results"][0]["name"].str();
+        }
+    } else if (!r.located && autoOn) {
+        if (WindowsLocation(r.lat, r.lon)) {
+            r.located = true;
+            r.place = L"Tu ubicación";
+        } else if (HttpsRequest(L"GET", L"ipwho.is", L"/", L"", "", resp, code) && (r.net = true) && code == 200 && JsonParse(resp, j) &&
+                   j["success"].t == Json::Bool && j["success"].b && j["latitude"].t == Json::Num && j["longitude"].t == Json::Num) {
+            r.located = true;
+            r.lat = j["latitude"].n;
+            r.lon = j["longitude"].n;
+            r.place = j["city"].str().empty() ? std::wstring(L"Tu ubicación") : j["city"].str();
+        }
+    } else if (!r.located) r.net = true; // nothing to try: the place is unknown by choice, not for lack of network
+    if (r.located) {
+        wchar_t path[320];
+        swprintf(path, 320, L"/v1/forecast?latitude=%.2f&longitude=%.2f&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=auto",
+                 r.lat, r.lon);
+        r.ok = HttpsRequest(L"GET", L"api.open-meteo.com", path, L"", "", r.body, code) && code == 200;
+    }
+    WeatherReply* out = new WeatherReply(std::move(r));
+    if (!PostMessageW(hwnd, WM_WEATHER, 0, (LPARAM)out)) delete out; // the window is gone
+}
 
 class CapriNotchApp {
 public:
@@ -70,6 +139,8 @@ public:
     int targetWidth = 220 + 2 * NOTCH_SHOULDER;
     int currentHeight = 34;
     int targetHeight = 34;
+    float animW = (float)currentWidth, animH = (float)currentHeight, velW = 0, velH = 0; // spring state of the size
+    ULONGLONG animAt = 0;                                                               // time of the last spring step
 
     float scale = 1.0f; // monitor DPI / 96; sizes above are logical, the window is scale times bigger
 
@@ -160,6 +231,11 @@ public:
         pomo.Retime();
         if (RunAtLogin() != g_settings.startWithWindows) SetRunAtLogin(g_settings.startWithWindows);
         if (!g_settings.hideFullscreen) hiddenByFullscreen = false;
+        // A new place in Settings: the place is found again; the forecast follows on the next tick while its tab is open
+        if (g_settings.weatherAuto != ui.weather.autoAsked || g_settings.weatherCityName != ui.weather.cityAsked) {
+            ui.weather.located = false;
+            ui.weather.at = 0;
+        }
         ApplyVisibility();
         UpdateTargetDimensions();
         UpdateDisplay();
@@ -363,22 +439,16 @@ public:
     }
 
     void OnAnimTick() {
-        bool changed = false;
-        // Smooth easing towards target
-        if (currentWidth != targetWidth) {
-            int diff = targetWidth - currentWidth;
-            int step = diff / 4;
-            if (step == 0) step = (diff > 0) ? 1 : -1;
-            currentWidth += step;
-            changed = true;
-        }
-        if (currentHeight != targetHeight) {
-            int diff = targetHeight - currentHeight;
-            int step = diff / 4;
-            if (step == 0) step = (diff > 0) ? 1 : -1;
-            currentHeight += step;
-            changed = true;
-        }
+        // Damped spring towards the target size. The overshoot is clamped to the pixel buffer.
+        ULONGLONG now = GetTickCount64();
+        float dt = animAt && now - animAt <= 50 ? (now - animAt) / 1000.0f : 0.016f;
+        animAt = now;
+        capri_spring(&animW, &velW, (float)targetWidth, dt);
+        capri_spring(&animH, &velH, (float)targetHeight, dt);
+        int nw = (std::min)((int)lroundf(animW), BUF_W), nh = (std::min)((int)lroundf(animH), BUF_H);
+        bool changed = nw != currentWidth || nh != currentHeight || velW != 0 || velH != 0 || animW != targetWidth || animH != targetHeight;
+        currentWidth = nw;
+        currentHeight = nh;
         int tuckTarget = tucked ? currentHeight - TUCK_EDGE : 0;
         if (tuckY != tuckTarget) {
             int diff = tuckTarget - tuckY;
@@ -388,7 +458,6 @@ public:
             changed = true;
         }
 
-        ULONGLONG now = GetTickCount64();
         bool live = ui.PillLive(expanded, media.isPlaying && media.currentTitle != media.idleTitle) && now - livePaintAt >= 50;
         if (live) livePaintAt = now;
         if (changed || live || ui.Animating()) {
@@ -430,10 +499,11 @@ public:
         reminderMinute = nowMin;
         for (size_t i : events.On(CapriUI::TodayKey())) {
             const CalEvent& e = events.events[i];
-            int due = AlertDue(e, nowMin);
-            if (!due || ui.calHidden[e.color]) continue;
+            int lead = 0;
+            int due = AlertDue(e, nowMin, &lead);
+            if (!due || ui.calHidden[e.color] || !CapriUI::RemindsFor(e)) continue;
             const CalCategory& c = CAL_CATS[e.color];
-            ui.notice = (due == 2 ? L"Ahora · " : e.alert == 60 ? L"En 1 h · " : L"En " + std::to_wstring(e.alert) + L" min · ") + e.title;
+            ui.notice = (due == 2 ? L"Ahora · " : lead == 60 ? L"En 1 h · " : L"En " + std::to_wstring(lead) + L" min · ") + e.title;
             ui.noticeRight = EventTime(e.minute);
             ui.noticeIcon = L"";
             ui.noticeColor = Gdiplus::Color(255, c.r, c.g, c.b);
@@ -448,6 +518,12 @@ public:
         CheckFullscreen();
         pomo.Tick();
         media.DetectActiveTrack();
+        if (expanded && activeTab == TAB_SYSTEM) { // sampled only while shown: the CPU figure is a delta since the last call
+            capri_sys_sample(&ui.sys, g_settings.sysTemps, g_settings.sysPower);
+            ui.cpuHist[ui.cpuHistPos] = ui.sys.cpu;
+            ui.cpuHistPos = (ui.cpuHistPos + 1) % 60;
+        }
+        if (expanded && activeTab == TAB_WEATHER) FetchWeather(); // a no-op within 15 min of the last answer
         UpdateTargetDimensions(); // playback pause/resume switches the collapsed notch between lyric and title width
         UpdateDisplay();
     }
@@ -492,12 +568,18 @@ public:
         if (!PtInRect(&zone, pt)) SetTucked(false);
     }
 
-    // Moves the task list by `rows` and keeps it in range (also after deletes)
+    // Moves the task list by `rows` and keeps it in range (also after deletes). Rows: the dated tasks, then todo.tasks.
     void ScrollTodo(int rows) {
-        size_t n = todo.tasks.size(), maxTop = n > CapriUI::TODO_ROWS ? n - CapriUI::TODO_ROWS : 0;
+        size_t n = CapriUI::DatedTasks(events, CapriUI::TodayKey()).size() + todo.tasks.size(), maxTop = n > CapriUI::TODO_ROWS ? n - CapriUI::TODO_ROWS : 0;
         long long top = (long long)ui.todoTop + rows;
         ui.todoTop = (size_t)(std::max)(0LL, (std::min)((long long)maxTop, top));
         UpdateDisplay();
+    }
+
+    // Scrolls just enough to bring task-list row `row` into view
+    void ShowTodoRow(size_t row) {
+        long long top = (long long)ui.todoTop, a = (long long)row;
+        ScrollTodo((int)(a < top ? a - top : a >= top + (long long)CapriUI::TODO_ROWS ? a - top - (long long)CapriUI::TODO_ROWS + 1 : 0));
     }
 
     void CommitTodo() {
@@ -505,11 +587,24 @@ public:
         t.erase(0, t.find_first_not_of(L' '));
         t.erase(t.find_last_not_of(L' ') + 1);
         ui.todoDraft.clear();
+        // A date or a time typed makes a calendar task (not for a subtask, and not while tasksInCalendar is off)
+        CalEvent p;
+        const int today = CapriUI::TodayKey();
+        if (g_settings.tasksInCalendar && ui.todoParent == SIZE_MAX && ParseQuickEvent(t, 0, today, p) && (p.date || p.minute >= 0)) {
+            if (!p.date) p.date = today; // a time alone means today
+            if (p.minute >= 0 && p.end < 0) p.end = (std::min)(1440, p.minute + 60);
+            if (t.find(L'#') == std::wstring::npos) p.color = g_settings.defaultCategory;
+            p.alert = g_settings.defaultAlert;
+            p.moreAlerts = g_settings.defaultMoreAlerts;
+            p.task = 1;
+            size_t at = SIZE_MAX;
+            ChangeEvents([&] { at = events.Add(p); });
+            std::vector<size_t> dated = CapriUI::DatedTasks(events, today); // its row, after the others are found again
+            return ShowTodoRow(std::find(dated.begin(), dated.end(), at) - dated.begin());
+        }
         size_t at = todo.Add(t, ui.todoParent); // ignores empty text; the parent stays set for the next subtask
         if (at == SIZE_MAX) return UpdateDisplay();
-        // Scroll just enough to bring the new row into view
-        long long top = (long long)ui.todoTop, a = (long long)at;
-        ScrollTodo((int)(a < top ? a - top : a >= top + (long long)CapriUI::TODO_ROWS ? a - top - (long long)CapriUI::TODO_ROWS + 1 : 0));
+        ShowTodoRow(CapriUI::DatedTasks(events, today).size() + at); // plain tasks come after the dated ones
     }
 
     // Saves the event window's draft (or rewrites the event it was opened on) and jumps to its day; a blank title does nothing
@@ -564,7 +659,7 @@ public:
 
     void OpenPopup(CalEvent e, int editIdx) {
         if (e.minute >= 0 && e.end <= e.minute) e.end = (std::min)(1440, e.minute + 60); // no end stored = drawn as an hour
-        if (editIdx < 0) { e.color = g_settings.defaultCategory; e.alert = g_settings.defaultAlert; } // new events take the defaults
+        if (editIdx < 0) { e.color = g_settings.defaultCategory; e.alert = g_settings.defaultAlert; e.moreAlerts = g_settings.defaultMoreAlerts; } // new events take the defaults
         ui.popEv = e;
         ui.popEdit = editIdx;
         ui.popFocus = 0;
@@ -605,8 +700,16 @@ public:
         case C::HIT_POP_END: e.end = (std::max)((std::min)(e.minute + 15, 1440), (std::min)(1440, e.end + h.a)); return;
         case C::HIT_POP_REPEAT: e.repeat = h.a; return;
         case C::HIT_POP_COLOR: e.color = h.a; return;
-        case C::HIT_POP_ALERT: e.alert = h.a; return;
+        case C::HIT_POP_ALERT: { // h.a is one bit; Ninguno (0) clears them all
+            int mask = AlertMask(e.alert, e.moreAlerts);
+            SetAlertMask(h.a ? mask ^ h.a : 0, e.alert, e.moreAlerts);
+            return;
+        }
         case C::HIT_POP_SOURCE: e.src = h.a; return;
+        case C::HIT_POP_TASK: // a task is local: turning it on picks Capri
+            e.task = e.task ? 0 : 1;
+            if (e.task) e.src = 0;
+            return;
         }
     }
 
@@ -661,8 +764,35 @@ public:
         if (h.kind == C::HIT_COLOR) e.color = h.a;
         else if (h.kind == C::HIT_MOVE) e.date = TmKey(KeyTm(e.date, h.a));
         else if (h.kind == C::HIT_REPEAT) e.repeat = (e.repeat + 1) % 5;
+        else if (h.kind == C::HIT_TASK_DONE) e.task = e.task == 2 ? 1 : 2;
         ScheduleSync(e.src);
         ui.calEvent = (int)events.Update(ui.calEvent, e);
+    }
+
+    // A click on a weather control (see CapriUI::tabHits)
+    void OnTabHit(const CapriUI::CalHit& h) {
+        using C = CapriUI;
+        switch (h.kind) {
+        case C::HIT_W_RETRY: return FetchWeather(true);
+        case C::HIT_W_SETUP: return OpenSettings(SettingsWindow::SEC_WEATHER);
+        }
+    }
+
+    // Open-Meteo, asked for only while the Clima tab is open: a forecast at most every 15 min, or at once when forced (retry).
+    // The place is looked up only while it is unknown (see ApplySettings). The answer comes back as WM_WEATHER.
+    void FetchWeather(bool force = false) {
+        auto& w = ui.weather;
+        ULONGLONG now = GetTickCount64();
+        if (w.status == 1 || (!force && w.status != 0 && w.at && now - w.at < 15 * 60000)) return;
+        w.status = 1;
+        w.autoAsked = g_settings.weatherAuto;
+        w.cityAsked = g_settings.weatherCityName;
+        WeatherReply known;
+        known.located = w.located;
+        known.place = w.place;
+        known.lat = w.lat;
+        known.lon = w.lon;
+        std::thread(WeatherWork, hWnd, known, w.autoAsked, w.cityAsked).detach();
     }
 
     // ---- calendar sync: the two services, their sign-in and timers, and the worker's results (sync.h)
@@ -857,17 +987,28 @@ public:
         // Icon tab row (y: 8 - 38)
         if (y >= 8 && y <= 38) {
             for (int i = 0; i < TAB_COUNT; ++i) {
-                float tabX = 16.0f + i * 46.0f;
-                if (x >= tabX && x <= tabX + 40.0f) {
+                float tabX = 16.0f + i * TAB_STEP;
+                if (x >= tabX && x <= tabX + TAB_W) {
+                    ui.TabChanged(activeTab, (NotchTab)i);
                     activeTab = (NotchTab)i;
                     ui.editing = false;
                     if (i == TAB_CALENDAR) ui.CalHome();
+                    if (i == TAB_WEATHER) FetchWeather();
+                    if (i == TAB_SYSTEM) capri_sys_sample(&ui.sys, g_settings.sysTemps, g_settings.sysPower); // memory and disk on the first paint; CPU follows a second later
                     UpdateTargetDimensions();
                     UpdateDisplay();
                     return;
                 }
             }
         }
+
+        // Areas the clock and weather tabs registered while painting
+        for (auto it = ui.tabHits.rbegin(); it != ui.tabHits.rend(); ++it)
+            if (it->r.Contains((float)x, (float)y)) {
+                OnTabHit(*it);
+                UpdateDisplay();
+                return;
+            }
 
         // Specific tab interactions
         if (activeTab == TAB_MEDIA) {
@@ -906,18 +1047,33 @@ public:
         } else if (activeTab == TAB_TASKS) {
             // Task rows (y from 82, step 26): X deletes, + (top-level only) starts a subtask, anywhere else toggles
             if (y >= 82 && y < 82 + (int)CapriUI::TODO_ROWS * 26) {
-                size_t idx = ui.todoTop + (y - 82) / 26;
-                if (idx >= todo.tasks.size()) return;
-                if (x >= w - 44) {
-                    todo.Remove(idx);
-                    ui.todoParent = SIZE_MAX; // indices shifted
-                } else if (x >= w - 68 && !todo.tasks[idx].sub) {
-                    ui.todoParent = idx;
-                    ui.editing = true;
-                    SetForegroundWindow(hWnd);
-                    SetFocus(hWnd);
+                const std::vector<size_t> dated = CapriUI::DatedTasks(events, CapriUI::TodayKey()); // as the list draws them
+                size_t idx = ui.todoTop + (y - 82) / 26, D = dated.size();
+                if (idx >= D + todo.tasks.size()) return;
+                if (idx < D) { // a dated task: X removes its event, the rest of the row flips done and open
+                    const size_t ei = dated[idx];
+                    ChangeEvents([&] {
+                        if (x >= w - 44) {
+                            events.Remove(ei);
+                        } else {
+                            CalEvent t = events.events[ei];
+                            t.task = t.task == 2 ? 1 : 2;
+                            events.Update(ei, t);
+                        }
+                    });
                 } else {
-                    todo.Toggle(idx);
+                    idx -= D;
+                    if (x >= w - 44) {
+                        todo.Remove(idx);
+                        ui.todoParent = SIZE_MAX; // indices shifted
+                    } else if (x >= w - 68 && !todo.tasks[idx].sub) {
+                        ui.todoParent = idx;
+                        ui.editing = true;
+                        SetForegroundWindow(hWnd);
+                        SetFocus(hWnd);
+                    } else {
+                        todo.Toggle(idx);
+                    }
                 }
                 ScrollTodo(0);
             } else if (y >= 196 && y <= 226 && x >= 20 && x <= w - 20) {
@@ -1078,12 +1234,32 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         else if (LOWORD(lParam) == WM_CONTEXTMENU) g_App.ShowMenu(true);
         break;
 
+    case WM_WEATHER: {
+        std::unique_ptr<WeatherReply> r((WeatherReply*)lParam);
+        auto& w = g_App.ui.weather;
+        if (g_settings.weatherAuto != w.autoAsked || g_settings.weatherCityName != w.cityAsked) {
+            w.status = 0; // the place settings changed while this was in flight: the next tick asks again
+        } else {
+            if (r->located) {
+                w.located = true;
+                w.place = r->place;
+                w.lat = r->lat;
+                w.lon = r->lon;
+            }
+            w.status = !r->located ? (r->net ? 4 : 3) : (r->ok && capri_weather_parse(r->body.data(), r->body.size(), &w.data)) ? 2 : 3;
+            w.at = GetTickCount64();
+        }
+        g_App.UpdateDisplay();
+        break;
+    }
+
     case WM_SETTINGS_CHANGED:
         g_App.ApplySettings();
         break;
 
     case WM_USER + 100: // Audio wake trigger
         g_App.SetExpanded(true);
+        g_App.ui.TabChanged(g_App.activeTab, TAB_AI);
         g_App.activeTab = TAB_AI;
         g_App.UpdateDisplay();
         break;
@@ -1139,6 +1315,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
         Gdiplus::GdiplusShutdown(gdiplusToken);
         return 0;
+    }
+
+    // Dark context menus (tray and notch right-click): uxtheme ordinals 135 SetPreferredAppMode(1 = AllowDark) and 136 FlushMenuThemes, Win10 1903+
+    if (HMODULE ux = LoadLibraryExW(L"uxtheme.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+        auto setMode = (int (WINAPI*)(int))GetProcAddress(ux, MAKEINTRESOURCEA(135));
+        auto flush = (void (WINAPI*)())GetProcAddress(ux, MAKEINTRESOURCEA(136));
+        if (setMode && flush) { setMode(1); flush(); }
     }
 
     WNDCLASSEXW wc = {0};

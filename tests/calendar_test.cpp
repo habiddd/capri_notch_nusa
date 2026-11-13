@@ -102,6 +102,47 @@ int main() {
     assert(m.events.size() == 3 && m.events[0].dirty == 14 && m.On(20261110).empty());
     m.Remove(1);
     assert(m.events.size() == 2 && m.events[1].title == L"Vieja");
+
+    // Several alerts: the mask round-trips, the longest lead is the main one, and each chosen lead fires on its own
+    for (int mask = 0; mask < 16; ++mask) {
+        int al = 0, mo = 0;
+        SetAlertMask(mask, al, mo);
+        assert(AlertMask(al, mo) == mask && (mask ? al >= 0 : al == -1) && !(mo & AlertBit(al)));
+    }
+    int al = 0, mo = 0;
+    SetAlertMask(5, al, mo); // 30 min and at start
+    assert(al == 30 && mo == 1);
+    CalEvent multi{ 20261105, 930, 990, 0, 0, L"x", 10 }; // 10 min and 1 h
+    multi.moreAlerts = AlertBit(60);
+    int lead = -1;
+    assert(AlertDue(multi, 870, &lead) == 1 && lead == 60);
+    assert(AlertDue(multi, 920, &lead) == 1 && lead == 10);
+    assert(AlertDue(multi, 930, &lead) == 2 && lead == 0);
+    assert(AlertDue(multi, 900) == 0);
+
+    // Which tasks the Tareas tab lists: open ones always, done ones from their day on; events never; deleted ones never
+    CalEvent open{ 20261101, -1, -1, 0, 0, L"x" }, done = open, doneToday = open, plain = open, gone = open;
+    open.task = 1;
+    done.task = 2;
+    doneToday.task = 2;
+    doneToday.date = 20261103;
+    gone.task = 1;
+    gone.dirty = 4;
+    assert(TaskListed(open, 20261103) && !TaskListed(done, 20261103) && TaskListed(doneToday, 20261103));
+    assert(!TaskListed(plain, 20261103) && !TaskListed(gone, 20261103));
+
+    // Tasks and extra alerts survive save/load; a 7-field line with a task value out of range is skipped
+    m.events.clear();
+    CalEvent todo{ 20261114, -1, -1, 0, 0, L"Hacer algo" };
+    todo.task = 2;
+    todo.moreAlerts = 4;
+    m.Add(todo);
+    m.events.clear();
+    m.Load();
+    assert(m.events.size() == 1 && m.events[0].task == 2 && m.events[0].moreAlerts == 4 && m.events[0].alert == 10);
+    WriteUtf8File(m.storagePath, L"20261112|600|660|1|0|10|Tarea\t\t0\t0\t\t1\t10\n20261113|600|660|1|0|10|Mala\t\t0\t0\t\t7\t0\n");
+    m.Load();
+    assert(m.events.size() == 1 && m.events[0].task == 1 && m.events[0].moreAlerts == 10 && m.events[0].title == L"Tarea");
     DeleteFileW(m.storagePath.c_str());
     return 0;
 }

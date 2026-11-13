@@ -21,6 +21,8 @@ struct CalEvent {
     int dirty = 0;        // bits: 1 create, 2 update, 4 delete, 8 notes changed (waiting to be uploaded)
     int rev = 0;          // local edit counter, not saved: a push result for an older rev does not clear newer edits
     long long uid = 0;    // in-memory id, not saved; assigned by EventManager and MergePull
+    int moreAlerts = 0;   // extra alerts as bits (1 at start, 2 = 10 min, 4 = 30 min, 8 = 1 h); the main one is `alert`
+    int task = 0;         // 0 event, 1 task, 2 task done (tasks are local: src 0)
 };
 inline long long g_eventUid = 0;
 
@@ -179,11 +181,35 @@ inline void ApplyTitleTokens(CalEvent& e, int today) {
     e.title = p.title;
 }
 
-// 0 nothing, 1 early warning (alert minutes before), 2 it starts now; timed events only
-inline int AlertDue(const CalEvent& e, int nowMinute) {
-    if (e.minute < 0 || e.alert < 0) return 0;
-    if (e.minute == nowMinute) return 2;
-    return e.alert > 0 && e.minute - e.alert == nowMinute ? 1 : 0;
+// Alert bits: 1 at start, 2 = 10 min, 4 = 30 min, 8 = 1 h. Each bit's lead in minutes:
+inline constexpr int ALERT_MINUTES[] = { 0, 10, 30, 60 };
+inline int AlertBit(int alert) {
+    for (int i = 0; i < 4; ++i) if (alert == ALERT_MINUTES[i]) return 1 << i;
+    return 0; // -1 (none) and anything else
+}
+// Every chosen alert as bits (1 at start, 2 = 10 min, 4 = 30 min, 8 = 1 h); 0 = none
+inline int AlertMask(int alert, int more) { return more | AlertBit(alert); }
+// The opposite: the longest lead becomes the main alert (the one calendar services get), the rest go to `more`
+inline void SetAlertMask(int mask, int& alert, int& more) {
+    alert = -1;
+    for (int i = 0; i < 4; ++i) if (mask & (1 << i)) alert = ALERT_MINUTES[i]; // the highest bit is the longest lead
+    more = mask & ~AlertBit(alert);
+}
+
+// 0 nothing, 1 early warning (lead is the minutes before it fired), 2 it starts now; timed events only.
+// Due when any chosen alert matches; "starts now" fires for any event with an alert.
+inline int AlertDue(const CalEvent& e, int nowMinute, int* lead = nullptr) {
+    int mask = AlertMask(e.alert, e.moreAlerts);
+    if (e.minute < 0 || !mask) return 0;
+    if (e.minute == nowMinute) { if (lead) *lead = 0; return 2; }
+    for (int i = 1; i < 4; ++i)
+        if ((mask & (1 << i)) && e.minute - ALERT_MINUTES[i] == nowMinute) { if (lead) *lead = ALERT_MINUTES[i]; return 1; }
+    return 0;
+}
+
+// The Tasks tab's rule: an open task always shows; a done one only on its day or later
+inline bool TaskListed(const CalEvent& e, int today) {
+    return e.task != 0 && !(e.dirty & 4) && (e.task == 1 || e.date >= today);
 }
 class EventManager {
 public:
@@ -247,13 +273,14 @@ public:
         return out;
     }
 
-    // Lines are date|minute|end|color|repeat|alert|title, then title \t notes \t src \t dirty \t rid
+    // Lines are date|minute|end|color|repeat|alert|title, then title \t notes \t src \t dirty \t rid \t task \t moreAlerts
     void Save() {
         std::wstring all;
         for (const auto& e : events)
             all += std::to_wstring(e.date) + L"|" + std::to_wstring(e.minute) + L"|" + std::to_wstring(e.end) + L"|" +
                    std::to_wstring(e.color) + L"|" + std::to_wstring(e.repeat) + L"|" + std::to_wstring(e.alert) + L"|" + e.title +
-                   L"\t" + e.notes + L"\t" + std::to_wstring(e.src) + L"\t" + std::to_wstring(e.dirty) + L"\t" + e.rid + L"\n";
+                   L"\t" + e.notes + L"\t" + std::to_wstring(e.src) + L"\t" + std::to_wstring(e.dirty) + L"\t" + e.rid + L"\t" +
+                   std::to_wstring(e.task) + L"\t" + std::to_wstring(e.moreAlerts) + L"\n";
         WriteUtf8File(storagePath, all);
     }
 
@@ -291,7 +318,7 @@ public:
             } else {
                 continue;
             }
-            // title \t notes \t src \t dirty \t rid; older lines have no such tail, so their notes are everything after the first tab
+            // title \t notes \t src \t dirty \t rid [\t task \t moreAlerts]; older lines have no such tail, so their notes are everything after the first tab
             std::vector<std::wstring> tf;
             for (size_t s = 0;;) {
                 size_t q = e.title.find(L'\t', s);
@@ -299,13 +326,17 @@ public:
                 if (q == std::wstring::npos) break;
                 s = q + 1;
             }
-            long sv = 0, dv = 0;
-            if (tf.size() == 5 && num(tf[2], sv) && num(tf[3], dv) && sv >= 0 && sv <= 3 && dv >= 0 && dv <= 15) {
+            long sv = 0, dv = 0, tk = 0, mo = 0;
+            const bool v7 = tf.size() == 7;
+            if (v7 && !(num(tf[5], tk) && tk >= 0 && tk <= 2 && num(tf[6], mo) && mo >= 0 && mo <= 15)) continue;
+            if ((tf.size() == 5 || v7) && num(tf[2], sv) && num(tf[3], dv) && sv >= 0 && sv <= 3 && dv >= 0 && dv <= 15) {
                 e.title = tf[0];
                 e.notes = tf[1];
                 e.src = (int)sv;
                 e.dirty = (int)dv;
                 e.rid = tf[4];
+                e.task = v7 ? (int)tk : 0;
+                e.moreAlerts = v7 ? (int)mo : 0;
             } else {
                 size_t tab = e.title.find(L'\t');
                 if (tab != std::wstring::npos) {

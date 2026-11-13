@@ -7,6 +7,7 @@
 #include "events.h"
 #include "media.h"
 #include "ai_client.h"
+#include "tabs.h"
 #include <cmath>
 #include <ctime>
 
@@ -17,6 +18,10 @@ constexpr int LYRIC_SLIDE_MS = 260;
 constexpr int CLOSED_W = 220;     // collapsed content width with a title
 constexpr int CLOSED_MAX_W = 560; // longer collapsed text widens the notch up to this, then ellipsizes
 constexpr int CLOSED_CHROME = 104; // art tile + clock + padding around the centered text
+constexpr int TAB_STEP = 38;          // icon tab row: distance between tabs and the highlight's width
+constexpr int TAB_W = 34;
+constexpr int TAB_ANIM_MS = 220;      // tab switch: highlight glide, content slide and fade
+inline const Gdiplus::Color ACCENT(255, 124, 156, 255); // soft periwinkle: active tab, bars, sparklines, focus edges
 constexpr int PANEL_W = 460;          // expanded content column
 constexpr int MEDIA_COL_LYRICS = 300; // media controls column while lyrics share the panel
 constexpr int LYRICS_PANEL_W = 740;   // panel width with lyrics: the lyrics column gets the other 440 px
@@ -26,6 +31,17 @@ constexpr int CAL_POP_H = 524; // the panel grows while the event window is open
 
 class CapriUI {
 public:
+    // Tab switch: when it started and which way the content slides (set by TabChanged)
+    ULONGLONG tabChangedAt = 0;
+    int tabFrom = 0, tabDir = 1;
+    // Sistema: the last sample, and the CPU history for the sparkline (ring buffer of 60 samples)
+    CapriSys sys = {};
+    float cpuHist[60] = {};
+    int cpuHistPos = 0;
+    // Clima: the last forecast, the place it is for (found once; autoAsked/cityAsked are the settings it was asked with),
+    // when it arrived; status 0 none, 1 loading, 2 ok, 3 error, 4 place unknown
+    struct WeatherState { CapriWeather data = {}; std::wstring place; double lat = 0, lon = 0; bool located = false; bool autoAsked = true; std::wstring cityAsked; ULONGLONG at = 0; int status = 0; } weather;
+
     // Lyric line change animation state
     int lyricIndex = -2;
     std::wstring lyricText;
@@ -60,9 +76,12 @@ public:
     enum { HIT_DAY, HIT_PREV, HIT_NEXT, HIT_TODAY, HIT_VIEW, HIT_CAT, HIT_EVENT, HIT_SLOT,
            HIT_COLOR, HIT_MOVE, HIT_REPEAT, HIT_EDIT, HIT_DELETE, HIT_NEW,
            HIT_POP_BACK, HIT_POP_CARD, HIT_POP_TITLE, HIT_POP_NOTES, HIT_POP_DATE, HIT_POP_ALLDAY, HIT_POP_START, HIT_POP_END,
-           HIT_POP_REPEAT, HIT_POP_COLOR, HIT_POP_ALERT, HIT_POP_SAVE, HIT_POP_DELETE, HIT_POP_CANCEL, HIT_POP_SOURCE };
+           HIT_POP_REPEAT, HIT_POP_COLOR, HIT_POP_ALERT, HIT_POP_SAVE, HIT_POP_DELETE, HIT_POP_CANCEL, HIT_POP_SOURCE,
+           HIT_POP_TASK, HIT_TASK_DONE };
     struct CalHit { Gdiplus::RectF r; int kind, a, b; };
     std::vector<CalHit> calHits;
+    std::vector<CalHit> tabHits; // clickable areas of the clock and weather tabs (rebuilt on every expanded paint)
+    enum { HIT_W_RETRY, HIT_W_SETUP }; // kinds in tabHits
     static constexpr const wchar_t* DAY_NAMES[] = { L"Domingo", L"Lunes", L"Martes", L"Miércoles", L"Jueves", L"Viernes", L"Sábado" };
     static constexpr const wchar_t* MONTH_NAMES[] = { L"enero", L"febrero", L"marzo", L"abril", L"mayo", L"junio", L"julio",
                                                       L"agosto", L"septiembre", L"octubre", L"noviembre", L"diciembre" };
@@ -110,6 +129,20 @@ public:
     static std::wstring TimeRange(const CalEvent& e) {
         if (e.minute < 0) return L"Todo el día";
         return EventTime(e.minute) + (e.end >= 0 ? L"–" + EventTime(e.end) : std::wstring());
+    }
+    // A task's mark before its title in the calendar: open ○, done ✓ (escapes, so the source stays ASCII)
+    static std::wstring EventLabel(const CalEvent& e) {
+        return e.task == 1 ? L"○ " + e.title : e.task == 2 ? L"✓ " + e.title : e.title;
+    }
+    // Reminders and the idle pill skip a done task, and a dated task while tasksInCalendar is off
+    static bool RemindsFor(const CalEvent& e) { return e.task == 0 || (e.task == 1 && g_settings.tasksInCalendar); }
+    // The dated tasks the Tareas tab lists first (indices into ev.events, stored order); none while tasksInCalendar is off.
+    // Callers take it fresh after every change to the events, since the indices move.
+    static std::vector<size_t> DatedTasks(const EventManager& ev, int today) {
+        std::vector<size_t> out;
+        if (!g_settings.tasksInCalendar) return out;
+        for (size_t i = 0; i < ev.events.size(); ++i) if (TaskListed(ev.events[i], today)) out.push_back(i);
+        return out;
     }
 
     // Arrows (and the wheel in agenda/month): move the selection by a week, a day or a month (keeping the day where it exists)
@@ -165,7 +198,19 @@ public:
         return dateText;
     }
 
-    bool Animating() const { return GetTickCount64() - lyricChangedAt < LYRIC_SLIDE_MS; }
+    bool Animating() const {
+        ULONGLONG t = GetTickCount64();
+        return t - lyricChangedAt < LYRIC_SLIDE_MS || t - tabChangedAt < TAB_ANIM_MS;
+    }
+
+    // Starts the switch animation. Opening Sistema samples at once so memory and disk are not blank for a second.
+    void TabChanged(int from, int to) {
+        if (from == to) return;
+        tabFrom = from;
+        tabDir = to > from ? 1 : -1;
+        tabChangedAt = GetTickCount64();
+        if (to == TAB_SYSTEM) capri_sys_sample(&sys, g_settings.sysTemps, g_settings.sysPower);
+    }
 
     // Media column for an expanded content width: full panel normally, shrinking to MEDIA_COL_LYRICS as the panel
     // widens for lyrics. Derived from the animated width so the controls glide instead of jumping.
@@ -348,7 +393,7 @@ public:
             f->SetFormatFlags(StringFormatFlagsNoWrap);
         }
 
-        const wchar_t* tabIcons[] = { L"", L"", L"", L"",L"" };
+        const wchar_t* tabIcons[] = { L"", L"", L"", L"",L"",L"",L"" };
         if (!expanded) {
             // === COLLAPSED NOTCH === left tile / centered text / right value; the first state that applies wins
             ULONGLONG t = GetTickCount64();
@@ -415,7 +460,7 @@ public:
 
                 std::vector<std::pair<int, std::wstring>> timed;
                 for (size_t i : events.On(TodayKey()))
-                    if (events.events[i].minute >= 0) timed.push_back({ events.events[i].minute, events.events[i].title });
+                    if (events.events[i].minute >= 0 && RemindsFor(events.events[i])) timed.push_back({ events.events[i].minute, events.events[i].title });
                 int open = 0;
                 for (const auto& task : todo.tasks) open += task.completed ? 0 : 1;
                 centerText = IdleLine(timed, st.wHour * 60 + st.wMinute, open,
@@ -433,23 +478,29 @@ public:
         } else {
             // === EXPANDED NOTCH VIEW ===
             // 1. Icon tab row; active tab sits in a soft rounded square
-            const wchar_t* tabNames[] = { L"Música", L"Pomodoro", L"Tareas", L"Calendario", L"IA" };
-            for (int i = 0; i < TAB_COUNT; ++i) {
-                float tabX = 16.0f + i * 46.0f;
-                bool isActive = (activeTab == i);
-                if (isActive) {
-                    GraphicsPath tabPath;
-                    AddRoundRect(tabPath, tabX, 8.0f, 40.0f, 30.0f, 10.0f);
-                    SolidBrush tabActiveBg(Color(255, 44, 46, 52));
-                    g.FillPath(&tabActiveBg, &tabPath);
-                }
-                g.DrawString(tabIcons[i], -1, &iconFont, RectF(tabX, 8.0f, 40.0f, 30.0f), &center, isActive ? &textWhite : &textDim);
-            }
-            g.DrawString(tabNames[activeTab], -1, &fontMedium, RectF(16.0f + TAB_COUNT * 46.0f + 6.0f, 8.0f, 160.0f, 30.0f), &leftMid, &textWhite);
+            const wchar_t* tabNames[] = { L"Música", L"Pomodoro", L"Tareas", L"Calendario", L"IA", L"Clima", L"Sistema" };
+            // One highlight glides from the previous tab to the active one (tabEase 1 when settled)
+            tabHits.clear();
+            float tabP = (std::min)(1.0f, (float)(GetTickCount64() - tabChangedAt) / TAB_ANIM_MS);
+            float tabEase = 1.0f - (1.0f - tabP) * (1.0f - tabP) * (1.0f - tabP);
+            GraphicsPath tabPath;
+            AddRoundRect(tabPath, 16.0f + (tabFrom + (activeTab - tabFrom) * tabEase) * TAB_STEP, 8.0f, (float)TAB_W, 30.0f, 10.0f);
+            SolidBrush tabActiveBg(Color(255, 34, 37, 48));
+            g.FillPath(&tabActiveBg, &tabPath);
+            Pen tabOutline(Color(60, 124, 156, 255), 1.0f);
+            g.DrawPath(&tabOutline, &tabPath);
+            SolidBrush accent(ACCENT);
+            for (int i = 0; i < TAB_COUNT; ++i)
+                g.DrawString(tabIcons[i], -1, &iconFont, RectF(16.0f + i * TAB_STEP, 8.0f, (float)TAB_W, 30.0f), &center, i == activeTab ? &accent : &textDim);
+            int titleX = 16 + TAB_COUNT * TAB_STEP + 6; // the title stops before the gear
+            g.DrawString(tabNames[activeTab], -1, &fontMedium, RectF((float)titleX, 8.0f, (float)(width - 48 - titleX), 30.0f), &leftMid, &textWhite);
             // Settings gear at the right end of the row, on every tab (the title above stops at x 412, so they never meet)
             g.DrawString(L"", -1, &iconSmall, RectF((float)(width - 44), 8.0f, 32.0f, 30.0f), &center, &textDim);
 
             // 2. Tab Content Views
+            // The content slides in from the side the tab switch came from
+            GraphicsState gs = g.Save();
+            g.TranslateTransform(tabDir * 28.0f * (1.0f - tabEase), 0.0f);
             if (activeTab == TAB_MEDIA) {
                 const int col = MediaColumn(width); // controls column; the lyrics aside takes the rest to its right
 
@@ -548,7 +599,7 @@ public:
                 g.DrawEllipse(&track, cx - rr, cy - rr, rr * 2.0f, rr * 2.0f);
                 float progress = 1.0f - ((float)pomo.state.remainingSeconds / (float)pomo.state.totalSeconds);
                 if (progress > 0.0f) {
-                    Pen arc(Color(255, 242, 242, 245), 3.0f);
+                    Pen arc(ACCENT, 3.0f);
                     arc.SetStartCap(LineCapRound);
                     arc.SetEndCap(LineCapRound);
                     g.DrawArc(&arc, cx - rr, cy - rr, rr * 2.0f, rr * 2.0f, -90.0f, 360.0f * progress);
@@ -581,12 +632,18 @@ public:
                 wchar_t dateBuf[64];
                 wsprintfW(dateBuf, L"Hoy · %02d/%02d/%04d", st.wDay, st.wMonth, st.wYear);
                 g.DrawString(dateBuf, -1, &fontTitle, RectF(20.0f, 48.0f, 240.0f, 26.0f), &leftMid, &textWhite);
+                // Rows: the dated tasks first (r < D is events[dated[r]]), then todo.tasks[r - D]
+                const int todayKey = TodayKey();
+                const std::vector<size_t> dated = DatedTasks(events, todayKey);
+                const size_t D = dated.size(), N = D + todo.tasks.size();
+                todoTop = (std::min)(todoTop, N > TODO_ROWS ? N - TODO_ROWS : 0); // the list may have shrunk in the calendar
                 int open = 0;
                 for (const auto& t : todo.tasks) open += t.completed ? 0 : 1;
+                for (size_t i : dated) open += events.events[i].task == 1;
                 wchar_t openBuf[64];
-                if (todo.tasks.size() > TODO_ROWS) // scrolled with the mouse wheel
+                if (N > TODO_ROWS) // scrolled with the mouse wheel
                     wsprintfW(openBuf, L"%d pendientes · %d-%d de %d", open, (int)todoTop + 1,
-                              (int)(std::min)(todoTop + TODO_ROWS, todo.tasks.size()), (int)todo.tasks.size());
+                              (int)(std::min)(todoTop + TODO_ROWS, N), (int)N);
                 else
                     wsprintfW(openBuf, L"%d pendientes", open);
                 g.DrawString(openBuf, -1, &fontSmall, RectF(20.0f, 48.0f, (float)(width - 40), 26.0f), &rightMid, &textDim);
@@ -595,15 +652,25 @@ public:
                 Pen checkRing(Color(255, 70, 72, 78), 1.2f);
                 Font fontDone(&fontFamily, 9.0f, FontStyleStrikeout, UnitPoint);
                 float itemY = 82.0f;
-                if (todo.tasks.empty())
+                if (N == 0)
                     g.DrawString(L"Sin tareas. Escribe una abajo.", -1, &fontSmall, RectF(24.0f, itemY, (float)(width - 48), 24.0f), &leftMid, &textDim);
-                for (size_t i = todoTop; i < todo.tasks.size() && i < todoTop + TODO_ROWS; ++i) {
-                    const auto& item = todo.tasks[i];
+                for (size_t r = todoTop; r < N && r < todoTop + TODO_ROWS; ++r) {
+                    const bool isDated = r < D; // a calendar task: its event's title and done state, no subtasks, no + button
+                    const TaskItem item = isDated ? TaskItem{ events.events[dated[r]].title, events.events[dated[r]].task == 2 } : todo.tasks[r - D];
                     float in = item.sub ? 22.0f : 0.0f, textR = 44.0f; // subtasks indent; text stops before the buttons
-                    if (!item.sub) {
+                    if (isDated) {
+                        const CalEvent& ev = events.events[dated[r]];
+                        std::wstring when = ev.date == todayKey ? L"Hoy" : ev.date == TmKey(KeyTm(todayKey, 1)) ? L"Mañana" : DayShort(ev.date);
+                        if (ev.minute >= 0) when += L" · " + EventTime(ev.minute);
+                        SolidBrush redText(Color(255, 239, 68, 68)), catBrush(Color(255, CAL_CATS[ev.color].r, CAL_CATS[ev.color].g, CAL_CATS[ev.color].b));
+                        g.DrawString(when.c_str(), -1, &fontSmall, RectF((float)(width - 172), itemY, 124.0f, 24.0f), &rightMid, // wide enough for "Mié 11 nov · 09:00"
+                                     ev.task == 1 && ev.date < todayKey ? &redText : &textDim); // open and past its day: overdue
+                        g.FillEllipse(&catBrush, width - 190.0f, itemY + 8.0f, 8.0f, 8.0f);
+                        textR = 204.0f;
+                    } else if (!item.sub) {
                         g.DrawString(L"", -1, &iconSmall, RectF((float)(width - 68), itemY, 24.0f, 24.0f), &center, &textDim);
                         textR = 68.0f;
-                        auto p = todo.SubProgress(i);
+                        auto p = todo.SubProgress(r - D);
                         if (p.second) {
                             wchar_t prog[16];
                             wsprintfW(prog, L"%d/%d", p.first, p.second);
@@ -627,7 +694,7 @@ public:
                 GraphicsPath bAdd;
                 AddRoundRect(bAdd, 20.0f, 196.0f, (float)(width - 40), 30.0f, 8.0f);
                 g.FillPath(&surface, &bAdd);
-                Pen focusEdge(Color(110, 255, 255, 255), 1.0f);
+                Pen focusEdge(ACCENT, 1.0f);
                 g.DrawPath(editing ? &focusEdge : &surfaceEdge, &bAdd);
                 float fx = 32.0f;
                 if ((editing || !todoDraft.empty()) && todoParent < todo.tasks.size()) { // subtask: name its task first
@@ -644,7 +711,7 @@ public:
                     if (editing) shown += L"|";
                     g.DrawString(shown.c_str(), -1, &fontSmall, RectF(fx, 196.0f, width - 48.0f - fx, 30.0f), &leftMid, &textWhite);
                 } else {
-                    g.DrawString(L"Añadir tarea...", -1, &fontSmall, RectF(fx, 196.0f, width - 48.0f - fx, 30.0f), &leftMid, &textDim);
+                    g.DrawString(L"Añadir tarea... (ej. Informe mañana 10:00)", -1, &fontSmall, RectF(fx, 196.0f, width - 48.0f - fx, 30.0f), &leftMid, &textDim);
                 }
                 g.DrawString(L"", -1, &iconSmall, RectF((float)(width - 48), 196.0f, 24.0f, 30.0f), &center, &textDim);
 
@@ -661,7 +728,8 @@ public:
                 auto catColor = [&](int c, BYTE alpha = 255) { return Color(alpha, CAL_CATS[c].r, CAL_CATS[c].g, CAL_CATS[c].b); };
                 auto visible = [&](int key) {
                     std::vector<size_t> v;
-                    for (size_t i : events.On(key)) if (!calHidden[events.events[i].color]) v.push_back(i);
+                    for (size_t i : events.On(key))
+                        if (!calHidden[events.events[i].color] && (events.events[i].task == 0 || g_settings.tasksInCalendar)) v.push_back(i);
                     return v;
                 };
                 auto fillRound = [&](Brush* b, float x, float y, float w, float h, float r) {
@@ -681,7 +749,7 @@ public:
                 Font fontMicro(&fontFamily, 7.0f, FontStyleRegular, UnitPoint);
                 SolidBrush chipBg(Color(255, 44, 46, 52)), todayFill(Color(255, 245, 245, 247)), colBg(Color(255, 22, 23, 27)),
                            colToday(Color(255, 38, 40, 46)), faint(Color(255, 72, 74, 80));
-                Pen selRing(Color(150, 255, 255, 255), 1.2f), focusEdge(Color(110, 255, 255, 255), 1.0f);
+                Pen selRing(Color(150, 255, 255, 255), 1.2f), focusEdge(ACCENT, 1.0f);
                 Pen nowPen(Color(255, 239, 68, 68), 1.5f), hourLine(Color(255, 48, 49, 55), 1.0f);
                 SolidBrush nowDot(Color(255, 239, 68, 68));
 
@@ -799,7 +867,7 @@ public:
                             SolidBrush bar(catColor(e.color));
                             g.FillRectangle(&bar, 256.0f, ry + 4.0f, 3.0f, 14.0f);
                             g.DrawString(TimeRange(e).c_str(), -1, &fontSmall, RectF(268.0f, ry, 96.0f, rh), &leftMid, &textDim);
-                            g.DrawString(e.title.c_str(), -1, &fontSmall, RectF(368.0f, ry, 316.0f, rh), &leftMid, &textWhite);
+                            g.DrawString(EventLabel(e).c_str(), -1, &fontSmall, RectF(368.0f, ry, 316.0f, rh), &leftMid, &textWhite);
                             if (e.src) g.DrawString((e.src == 1 || (e.src == 3 && linkGoogle)) ? L"G" : L"O", -1, &fontTiny, RectF(712.0f, ry, 20.0f, rh), &center, &textDim);
                             if (e.repeat) g.DrawString(L"", -1, &iconSmall, RectF(684.0f, ry, 24.0f, rh), &center, &textDim);
                             hit(250.0f, ry, 490.0f, rh, HIT_EVENT, row.ev);
@@ -845,7 +913,7 @@ public:
                             SolidBrush soft(catColor(e.color, 90)), solid(catColor(e.color));
                             fillRound(&soft, cx + 3.0f, 102.0f, cw - 6.0f, 16.0f, 4.0f);
                             g.FillRectangle(&solid, cx + 3.0f, 105.0f, 3.0f, 10.0f);
-                            textAt(e.title + (allDay > 1 ? L" +" + std::to_wstring(allDay - 1) : std::wstring()), &fontTiny, cx + 9.0f, 110.0f, cw - 14.0f, &textWhite);
+                            textAt(EventLabel(e) + (allDay > 1 ? L" +" + std::to_wstring(allDay - 1) : std::wstring()), &fontTiny, cx + 9.0f, 110.0f, cw - 14.0f, &textWhite);
                             hit(cx + 3.0f, 102.0f, cw - 6.0f, 16.0f, HIT_EVENT, firstAll);
                         }
 
@@ -888,9 +956,9 @@ public:
                             g.FillRectangle(&solid, bx, by + 3.0f, 3.0f, bh - 6.0f);
                             if (bh >= 34.0f) { // room for two lines: time over title
                                 textAt(EventTime(b.s), &fontTiny, bx + 7.0f, by + 9.0f, bw - 9.0f, &textDim);
-                                textAt(e.title, &fontTiny, bx + 7.0f, by + 23.0f, bw - 9.0f, &textWhite);
+                                textAt(EventLabel(e), &fontTiny, bx + 7.0f, by + 23.0f, bw - 9.0f, &textWhite);
                             } else {
-                                textAt((cw > 100.0f ? EventTime(b.s) + L" " : std::wstring()) + e.title, &fontTiny, bx + 7.0f, by + bh / 2.0f, bw - 9.0f, &textWhite);
+                                textAt((cw > 100.0f ? EventTime(b.s) + L" " : std::wstring()) + EventLabel(e), &fontTiny, bx + 7.0f, by + bh / 2.0f, bw - 9.0f, &textWhite);
                             }
                             float y0 = (std::max)(by, top), y1 = (std::min)(by + bh, top + HOURS * hh);
                             hit(bx, y0, bw, y1 - y0, HIT_EVENT, (int)b.i);
@@ -928,7 +996,7 @@ public:
                             SolidBrush soft(catColor(e.color, 80));
                             float by = cy + 20.0f + k * 10.0f;
                             fillRound(&soft, cx + 3.0f, by, cw - 6.0f, 9.0f, 3.0f);
-                            textAt(e.title, &fontMicro, cx + 6.0f, by + 4.5f, cw - 10.0f, &textWhite);
+                            textAt(EventLabel(e), &fontMicro, cx + 6.0f, by + 4.5f, cw - 10.0f, &textWhite);
                         }
                         if (vis.size() > 2) {
                             std::wstring more = L"+" + std::to_wstring(vis.size() - 2);
@@ -948,7 +1016,7 @@ public:
                     const CalEvent& e = events.events[calEvent];
                     SolidBrush bar(catColor(e.color));
                     fillRound(&bar, 262.0f, 360.0f, 3.0f, 20.0f, 1.5f);
-                    g.DrawString(e.title.c_str(), -1, &fontSmallBold, RectF(272.0f, 353.0f, 166.0f, 18.0f), &leftMid, &textWhite);
+                    g.DrawString(EventLabel(e).c_str(), -1, &fontSmallBold, RectF(272.0f, 353.0f, 166.0f, 18.0f), &leftMid, &textWhite);
                     textAt(DayShort(e.date) + L" · " + TimeRange(e), &fontTiny, 272.0f, 378.0f, 166.0f, &textDim);
                     for (int c = 0; c < CAL_CAT_COUNT; ++c) { // category: the current one ringed
                         float dx = 454.0f + c * 16.0f;
@@ -964,10 +1032,15 @@ public:
                     if (!ro) hit(548.0f, 352.0f, 20.0f, 36.0f, HIT_MOVE, -1);
                     if (!ro) hit(568.0f, 352.0f, 20.0f, 36.0f, HIT_MOVE, 1);
                     fillRound(&chipBg, 592.0f, 359.0f, 92.0f, 22.0f, 8.0f);
-                    // A series already in the service keeps its repeat: it is shown, dimmed, and cannot be changed here
-                    bool repeatLocked = ro || (e.src && !e.rid.empty());
-                    g.DrawString(CAL_REPEAT[e.repeat], -1, &fontSmall, RectF(592.0f, 359.0f, 92.0f, 22.0f), &center, e.repeat && !repeatLocked ? &textWhite : &textDim);
-                    if (!repeatLocked) hit(592.0f, 359.0f, 92.0f, 22.0f, HIT_REPEAT);
+                    if (e.task) { // the strip is full: a task's done toggle takes the repeat chip's place (its repeat is set in the event window)
+                        g.DrawString(e.task == 2 ? L"Reabrir" : L"Completar", -1, &fontSmall, RectF(592.0f, 359.0f, 92.0f, 22.0f), &center, &textWhite);
+                        if (!ro) hit(592.0f, 359.0f, 92.0f, 22.0f, HIT_TASK_DONE);
+                    } else {
+                        // A series already in the service keeps its repeat: it is shown, dimmed, and cannot be changed here
+                        bool repeatLocked = ro || (e.src && !e.rid.empty());
+                        g.DrawString(CAL_REPEAT[e.repeat], -1, &fontSmall, RectF(592.0f, 359.0f, 92.0f, 22.0f), &center, e.repeat && !repeatLocked ? &textWhite : &textDim);
+                        if (!repeatLocked) hit(592.0f, 359.0f, 92.0f, 22.0f, HIT_REPEAT);
+                    }
                     g.DrawString(L"", -1, &iconSmall, RectF(688.0f, 352.0f, 24.0f, 36.0f), &center, &act);
                     g.DrawString(L"", -1, &iconSmall, RectF(712.0f, 352.0f, 24.0f, 36.0f), &center, &act);
                     if (!ro) hit(688.0f, 352.0f, 24.0f, 36.0f, HIT_EDIT);
@@ -1028,12 +1101,15 @@ public:
                     const wchar_t* srcNames[] = { L"Capri", L"Google", L"Outlook" };
                     const float srcW[] = { 64.0f, 72.0f, 80.0f };
                     float sx = V;
+                    const bool taskOn = pe.task != 0; // a task is local: no service can be picked
                     for (int s = 0; s < 3; ++s) {
                         if (popEdit < 0 ? s > 0 && syncDot[s] == SYNC_OFF : s != pe.src) continue;
-                        if (popEdit < 0) chip(sx, yCal, srcW[s], srcNames[s], pe.src == s, HIT_POP_SOURCE, s);
+                        if (popEdit < 0) chip(sx, yCal, srcW[s], srcNames[s], pe.src == s, HIT_POP_SOURCE, s, !taskOn);
                         else chip(sx, yCal, srcW[s], srcNames[s], true, HIT_POP_SOURCE, s, false);
                         sx += srcW[s] + 8.0f;
                     }
+                    // Tarea: right end of the row (inside the form's right edge). An event already in a service cannot become one.
+                    chip(RX - 64.0f, yCal, 64.0f, L"Tarea", taskOn, HIT_POP_TASK, 0, popEdit < 0 || pe.src == 0);
 
                     // Date
                     label(yDate, L"Fecha");
@@ -1076,12 +1152,14 @@ public:
                     }
                     g.DrawString(CAL_CATS[pe.color].name, -1, &fontSmall, RectF(V + 164.0f, yCat, RX - V - 164.0f, 24.0f), &leftMid, &textWhite);
 
-                    // Alert: only for timed events
+                    // Alert: only for timed events. Each time is its own toggle (bits, see AlertMask); Ninguno (bit 0) is on when none is
                     label(yAlert, L"Aviso");
                     const wchar_t* alertNames[] = { L"Ninguno", L"Al empezar", L"10 min", L"30 min", L"1 h" };
-                    const int alertVals[] = { -1, 0, 10, 30, 60 };
+                    const int alertBits[] = { 0, 1, 2, 4, 8 };
                     const float alertW[] = { 62.0f, 80.0f, 56.0f, 56.0f, 44.0f };
-                    for (int i = 0, x = (int)V; i < 5; x += (int)alertW[i++] + 8) chip((float)x, yAlert, alertW[i], alertNames[i], timed && pe.alert == alertVals[i], HIT_POP_ALERT, alertVals[i], timed);
+                    const int alertMask = AlertMask(pe.alert, pe.moreAlerts);
+                    for (int i = 0, x = (int)V; i < 5; x += (int)alertW[i++] + 8)
+                        chip((float)x, yAlert, alertW[i], alertNames[i], timed && (alertBits[i] ? (alertMask & alertBits[i]) != 0 : alertMask == 0), HIT_POP_ALERT, alertBits[i], timed);
 
                     // Notes
                     label(yNotes + 3.0f, L"Notas");
@@ -1139,6 +1217,122 @@ public:
                 g.FillPath(&chipBg, &bQ2);
                 g.DrawString(L"Resumir día y tareas", -1, &fontSmall, RectF(24.0f, 192.0f, 170.0f, 28.0f), &center, &textWhite);
                 g.DrawString(L"Consejo de productividad", -1, &fontSmall, RectF(204.0f, 192.0f, 170.0f, 28.0f), &center, &textWhite);
+
+            } else if (activeTab == TAB_SYSTEM) {
+                // 3x2 cards: CPU load and temperature (with a 60-sample sparkline), memory, disk C:, battery, battery power
+                const float cw = (width - 56.0f) / 3.0f, ch = 82.0f;
+                const float xs[] = { 20.0f, 20.0f + cw + 8.0f, 20.0f + 2.0f * (cw + 8.0f) }, ys[] = { 48.0f, 138.0f };
+                SolidBrush hotRed(Color(255, 239, 68, 68)), offDim(Color(255, 90, 92, 98));
+                auto one = [](float v) { int t = (int)lroundf(v * 10.0f); return std::to_wstring(t / 10) + L"." + std::to_wstring(t % 10); };
+                // frac < 0: no bar (the power card writes its word under the value instead)
+                auto card = [&](float x, float y, const wchar_t* label, Brush* labelBrush, const std::wstring& value, Brush* valueBrush, float frac, bool warn) {
+                    GraphicsPath cp;
+                    AddRoundRect(cp, x, y, cw, ch, 12.0f);
+                    g.FillPath(&surface, &cp);
+                    g.DrawPath(&surfaceEdge, &cp);
+                    g.DrawString(label, -1, &fontSmall, RectF(x + 14.0f, y + 10.0f, cw - 28.0f, 18.0f), &leftMid, labelBrush);
+                    g.DrawString(value.c_str(), -1, &fontMedium, RectF(x + 14.0f, y + 30.0f, cw - 28.0f, 26.0f), &leftMid, valueBrush);
+                    if (frac < 0.0f) return;
+                    frac = (std::min)(1.0f, (std::max)(0.0f, frac));
+                    GraphicsPath track, fill;
+                    AddRoundRect(track, x + 14.0f, y + ch - 14.0f, cw - 28.0f, 3.0f, 1.5f);
+                    SolidBrush trackBrush(Color(255, 58, 60, 66));
+                    g.FillPath(&trackBrush, &track);
+                    if (frac > 0.0f) {
+                        AddRoundRect(fill, x + 14.0f, y + ch - 14.0f, (std::max)(3.0f, (cw - 28.0f) * frac), 3.0f, 1.5f);
+                        SolidBrush fillBrush(warn && frac > 0.9f ? Color(255, 239, 68, 68) : ACCENT);
+                        g.FillPath(&fillBrush, &fill);
+                    }
+                };
+                const bool cpuHot = g_settings.sysTemps && sys.cpuTemp >= 85.0f;
+                std::wstring cpuText = std::to_wstring((int)lroundf(sys.cpu)) + L" %";
+                if (g_settings.sysTemps && sys.cpuTemp >= 0) cpuText += L" · " + std::to_wstring((int)lroundf(sys.cpuTemp)) + L" °C";
+                card(xs[0], ys[0], L"CPU", &textDim, cpuText, cpuHot ? &hotRed : &textWhite, sys.cpu / 100.0f, true);
+
+                const bool gpuOn = g_settings.sysTemps && sys.gpuTemp >= 0;
+                card(xs[1], ys[0], L"GPU", gpuOn ? &textDim : &offDim,
+                     gpuOn ? std::to_wstring((int)lroundf(sys.gpuTemp)) + L" °C" : std::wstring(L"—"),
+                     gpuOn && sys.gpuTemp >= 85.0f ? &hotRed : &textWhite, gpuOn ? sys.gpuTemp / 100.0f : 0.0f, true);
+
+                const std::wstring memSep = sys.memTotalGb >= 100 ? L"/" : L" / "; // "128.0/255.9 GB" would not fit the card otherwise
+                card(xs[2], ys[0], L"Memoria", &textDim, one(sys.memUsedGb) + memSep + one(sys.memTotalGb) + L" GB", &textWhite,
+                     sys.memTotalGb > 0 ? sys.memUsedGb / sys.memTotalGb : 0.0f, true);
+
+                card(xs[0], ys[1], L"Disco (C:)", &textDim, std::to_wstring((int)lroundf(sys.diskFreeGb)) + L" GB libres", &textWhite,
+                     sys.diskTotalGb > 0 ? 1.0f - sys.diskFreeGb / sys.diskTotalGb : 0.0f, true);
+
+                card(xs[1], ys[1], L"Batería", &textDim, sys.battery < 0 ? std::wstring(L"Sin batería") : std::to_wstring(sys.battery) + L" %", &textWhite,
+                     sys.battery < 0 ? 0.0f : sys.battery / 100.0f, false); // a full battery is no warning
+                if (sys.battery >= 0 && (sys.charging || sys.onAc)) // on the label line: "100 % · cargando" is wider than the card's text
+                    g.DrawString(sys.charging ? L"cargando" : L"enchufada", -1, &fontSmall, RectF(xs[1] + 14.0f, ys[1] + 10.0f, cw - 28.0f, 18.0f), &rightMid, &textDim);
+
+                const bool powerOn = g_settings.sysPower && sys.battery >= 0 && sys.batteryWKnown;
+                std::wstring power = !powerOn ? std::wstring(L"—") : sys.batteryW == 0.0f ? std::wstring(L"0 W")
+                                   : (sys.batteryW > 0 ? std::wstring(L"+") : std::wstring(L"−")) + one(fabsf(sys.batteryW)) + L" W";
+                const wchar_t* word = !powerOn ? L"" : sys.batteryW > 0 ? L"Entrando" : sys.batteryW < 0 ? L"Saliendo" : L"";
+                card(xs[2], ys[1], L"Energía", &textDim, power, &textWhite, -1.0f, false);
+                g.DrawString(word, -1, &fontSmall, RectF(xs[2] + 14.0f, ys[1] + 56.0f, cw - 28.0f, 18.0f), &leftMid, &textDim);
+
+                // CPU sparkline in the top right of its card, oldest sample on the left
+                Gdiplus::PointF pts[60];
+                for (int i = 0; i < 60; ++i)
+                    pts[i] = PointF(xs[0] + cw * 0.5f + i * (cw * 0.5f - 14.0f) / 59.0f,
+                                    ys[0] + 8.0f + 18.0f * (1.0f - cpuHist[(cpuHistPos + i) % 60] / 100.0f));
+                Pen spark(Color(160, ACCENT.GetR(), ACCENT.GetG(), ACCENT.GetB()), 1.5f);
+                g.DrawLines(&spark, pts, 60);
+
+            } else if (activeTab == TAB_WEATHER) {
+                // Place name in the header (no chevrons: the place is found for the user); then the forecast or its state
+                // only with a forecast: a place from an earlier fetch must not sit above "No pude encontrar tu ubicación"
+                g.DrawString(weather.status == 2 && !weather.place.empty() ? weather.place.c_str() : L"Clima", -1, &fontTitle, RectF(20.0f, 48.0f, width - 40.0f, 24.0f), &leftMid, &textWhite);
+
+                if (weather.status == 2) {
+                    const CapriWeather& d = weather.data;
+                    Font fontHuge(&fontFamily, 30.0f, FontStyleBold, UnitPoint);
+                    g.DrawString((std::to_wstring((int)lroundf(d.temp)) + L"°").c_str(), -1, &fontHuge, RectF(20.0f, 80.0f, 180.0f, 46.0f), &leftMid, &textWhite);
+                    g.DrawString(Wide(capri_weather_text(d.code)).c_str(), -1, &fontSmall, RectF(20.0f, 128.0f, 180.0f, 18.0f), &leftMid, &textWhite);
+                    g.DrawString((L"Máx " + std::to_wstring((int)lroundf(d.tMax)) + L"° · Mín " + std::to_wstring((int)lroundf(d.tMin)) + L"°").c_str(),
+                                 -1, &fontSmall, RectF(20.0f, 150.0f, 180.0f, 18.0f), &leftMid, &textDim);
+
+                    // Feels-like, humidity and wind in one card
+                    GraphicsPath wc;
+                    AddRoundRect(wc, 236.0f, 48.0f, width - 256.0f, 160.0f, 12.0f);
+                    g.FillPath(&surface, &wc);
+                    g.DrawPath(&surfaceEdge, &wc);
+                    const wchar_t* labels[] = { L"Sensación", L"Humedad", L"Viento" };
+                    std::wstring values[] = { std::to_wstring((int)lroundf(d.feels)) + L"°", std::to_wstring(d.humidity) + L" %",
+                                              std::to_wstring((int)lroundf(d.wind)) + L" km/h" };
+                    for (int i = 0; i < 3; ++i) {
+                        float ry = 68.0f + i * 44.0f;
+                        g.DrawString(labels[i], -1, &fontSmall, RectF(250.0f, ry, 120.0f, 24.0f), &leftMid, &textDim);
+                        g.DrawString(values[i].c_str(), -1, &fontSmallBold, RectF(250.0f, ry, width - 284.0f, 24.0f), &rightMid, &textWhite);
+                    }
+                } else if (weather.status == 3 || weather.status == 4) {
+                    // 4: no place found, the chip opens the city setting; 3: no connection, the chip retries
+                    const bool unknown = weather.status == 4;
+                    g.DrawString(unknown ? L"No pude encontrar tu ubicación" : L"Sin conexión", -1, &fontSmall, RectF(20.0f, 104.0f, width - 40.0f, 24.0f), &center, &textDim);
+                    GraphicsPath rp;
+                    AddRoundRect(rp, width / 2.0f - 60.0f, 136.0f, 120.0f, 28.0f, 14.0f);
+                    SolidBrush retryBg(Color(255, 44, 46, 52));
+                    g.FillPath(&retryBg, &rp);
+                    g.DrawString(unknown ? L"Elegir ciudad" : L"Reintentar", -1, &fontSmallBold, RectF(width / 2.0f - 60.0f, 136.0f, 120.0f, 28.0f), &center, &textWhite);
+                    tabHits.push_back({ RectF(width / 2.0f - 60.0f, 136.0f, 120.0f, 28.0f), unknown ? HIT_W_SETUP : HIT_W_RETRY, 0, 0 });
+                } else {
+                    g.DrawString(L"Cargando…", -1, &fontSmall, RectF(20.0f, 104.0f, width - 40.0f, 24.0f), &center, &textDim);
+                }
+            }
+            g.Restore(gs);
+
+            // Veil over the content: fades during a tab switch, and while the notch is still opening (then it covers the tab row too)
+            float openVeil = 1.0f - std::clamp((height - 60) / 110.0f, 0.0f, 1.0f);
+            float veil = (std::max)(1.0f - tabEase, openVeil);
+            if (veil > 0.0f) {
+                GraphicsState vs = g.Save();
+                g.TranslateTransform(-(float)NOTCH_SHOULDER, 0.0f); // notchPath is in untranslated coordinates
+                g.SetClip(&notchPath);
+                SolidBrush veilBrush(Color((BYTE)(255 * veil), 8, 9, 12));
+                g.FillRectangle(&veilBrush, 0.0f, openVeil > 1.0f - tabEase ? 0.0f : 42.0f, (float)fullWidth, (float)height);
+                g.Restore(vs);
             }
         }
 

@@ -112,6 +112,8 @@ public:
     // Timeline snapshot: the app reports a position at a moment; Elapsed() runs it forward while playing.
     double position = 0, duration = 0;
     INT64 positionStamp = 0;
+    INT64 commandAt = 0;  // when play/pause was last pressed here (0 = the app has confirmed it)
+    bool pending = false; // the app still reports the state from before that press
 
     // Synced lyrics, written by the fetch thread (guarded by lyricsMutex)
     std::mutex lyricsMutex;
@@ -155,7 +157,8 @@ public:
         Send(&IGSMTCSession::TryTogglePlayPauseAsync, VK_MEDIA_PLAY_PAUSE);
         position = Elapsed(); // freeze/resume the lyric clock from here
         positionStamp = Now();
-        isPlaying = !isPlaying; // optimistic; the next refresh reads the real state
+        isPlaying = !isPlaying; // optimistic; DetectActiveTrack takes the real state once the app reports it
+        commandAt = positionStamp;
     }
 
     void Next() { Send(&IGSMTCSession::TrySkipNextAsync, VK_MEDIA_NEXT_TRACK); }
@@ -361,7 +364,11 @@ public:
         if (SUCCEEDED(pSession->GetPlaybackInfo(&pInfoRaw)) && pInfoRaw) {
             IGSMTCPlaybackInfo* pInfo = (IGSMTCPlaybackInfo*)pInfoRaw;
             int status = 0;
-            if (SUCCEEDED(pInfo->get_PlaybackStatus(&status))) isPlaying = (status == 4);
+            if (SUCCEEDED(pInfo->get_PlaybackStatus(&status))) {
+                // Some players (Sonora) obey at once but report it seconds later: until they do, or 5 s pass, what was pressed stands
+                pending = (status == 4) != isPlaying && Now() - commandAt < 50000000;
+                if (!pending) { isPlaying = (status == 4); commandAt = 0; }
+            }
             pInfo->Release();
         }
 
@@ -374,8 +381,10 @@ public:
             tl->get_Position(&pos);
             tl->get_LastUpdatedTime(&updated);
             duration = (end - start) / 1e7;
-            position = (pos - start) / 1e7;
-            positionStamp = updated;
+            if (!pending) { // while pending the app's clock is from before the press: ours, set in PlayPause, is the right one
+                position = (pos - start) / 1e7;
+                positionStamp = updated;
+            }
             tl->Release();
         }
 
