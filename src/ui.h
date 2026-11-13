@@ -18,6 +18,8 @@ constexpr int LYRIC_SLIDE_MS = 260;
 constexpr int CLOSED_W = 220;     // collapsed content width with a title
 constexpr int CLOSED_MAX_W = 560; // longer collapsed text widens the notch up to this, then ellipsizes
 constexpr int CLOSED_CHROME = 104; // art tile + clock + padding around the centered text
+constexpr int CLOSED_CHROME_LEFT = 60; // the same without a value on the right
+constexpr int CLOSED_FIT_MIN = 130;    // narrowest pill of the views that hug their content (Sistema, Pomodoro)
 constexpr int TAB_STEP = 38;          // icon tab row: distance between tabs and the highlight's width
 constexpr int TAB_W = 34;
 constexpr int TAB_ANIM_MS = 220;      // tab switch: highlight glide, content slide and fade
@@ -199,6 +201,7 @@ public:
     }
 
     bool Animating() const {
+        if (!EffectivePerf().anim) return false;
         ULONGLONG t = GetTickCount64();
         return t - lyricChangedAt < LYRIC_SLIDE_MS || t - tabChangedAt < TAB_ANIM_MS;
     }
@@ -244,8 +247,8 @@ public:
     }
 
     // Collapsed content width that fits `text` in the closed-notch font (same font and 96-DPI units as Render).
-    static int ClosedWidthFor(const std::wstring& text) {
-        if (text.empty()) return CLOSED_W;
+    static int ClosedWidthFor(const std::wstring& text, int minW = CLOSED_W, int chrome = CLOSED_CHROME) {
+        if (text.empty()) return minW;
         Gdiplus::Bitmap bmp(1, 1, PixelFormat32bppARGB);
         bmp.SetResolution(96.0f, 96.0f);
         Gdiplus::Graphics g(&bmp);
@@ -254,7 +257,7 @@ public:
         Gdiplus::Font f(&ff, 9.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPoint);
         Gdiplus::RectF box;
         g.MeasureString(text.c_str(), -1, &f, Gdiplus::PointF(0.0f, 0.0f), &box);
-        return (std::max)(CLOSED_W, (std::min)(CLOSED_MAX_W, (int)ceilf(box.Width) + CLOSED_CHROME));
+        return (std::max)(minW, (std::min)(CLOSED_MAX_W, (int)ceilf(box.Width) + chrome));
     }
 
     void AddRoundRect(Gdiplus::GraphicsPath& path, float x, float y, float width, float height, float radius) {
@@ -316,6 +319,8 @@ public:
                 PomodoroManager& pomo, TodoManager& todo, EventManager& events, MediaManager& media, AICompanion& ai, AudioWakeEngine& wake) {
         using namespace Gdiplus;
 
+        const Perf perf = EffectivePerf(); // read once per frame: animations and glow off take the plain paths below
+
         // Wrap DIB section in GDI+ Graphics with exact scanline stride
         Bitmap bitmap(pixelWidth, pixelHeight, stride, PixelFormat32bppARGB, (BYTE*)pvBits);
         bitmap.SetResolution(96.0f, 96.0f); // else point-sized fonts get the monitor DPI on top of `scale`
@@ -334,13 +339,18 @@ public:
         AddNotch(notchPath, (float)fullWidth, (float)(height - 1), expanded ? 22.0f : 16.0f);
 
         PointF diagA(-1.0f, -1.0f), diagB((float)fullWidth + 1.0f, (float)height + 1.0f);
-        LinearGradientBrush glass(diagA, diagB, Color(255, 18, 19, 23), Color(255, 1, 2, 3));
-        Color glassColors[] = { Color(255, 18, 19, 23), Color(255, 8, 9, 12), Color(255, 1, 2, 3) };
-        REAL glassPos[] = { 0.0f, 0.46f, 1.0f };
-        glass.SetInterpolationColors(glassColors, glassPos, 3);
-        g.FillPath(&glass, &notchPath);
+        if (perf.glow) {
+            LinearGradientBrush glass(diagA, diagB, Color(255, 18, 19, 23), Color(255, 1, 2, 3));
+            Color glassColors[] = { Color(255, 18, 19, 23), Color(255, 8, 9, 12), Color(255, 1, 2, 3) };
+            REAL glassPos[] = { 0.0f, 0.46f, 1.0f };
+            glass.SetInterpolationColors(glassColors, glassPos, 3);
+            g.FillPath(&glass, &notchPath);
+        } else {
+            SolidBrush glass(Color(255, 8, 9, 12));
+            g.FillPath(&glass, &notchPath);
+        }
 
-        if (expanded) {
+        if (expanded && perf.glow) {
             // Ambient light pooling at the base, tinted by the cover (blue/gold when nothing plays)
             g.SetClip(&notchPath);
             const Color& l = media.tint[0];
@@ -351,13 +361,18 @@ public:
         }
 
         // Hairline edge, skipped on the top line so the notch melts into the screen edge
-        LinearGradientBrush edgeBrush(diagA, diagB, Color(66, 255, 255, 255), Color(34, 255, 255, 255));
-        Color edgeColors[] = { Color(66, 255, 255, 255), Color(9, 255, 255, 255), Color(34, 255, 255, 255) };
-        REAL edgePos[] = { 0.0f, 0.4f, 1.0f };
-        edgeBrush.SetInterpolationColors(edgeColors, edgePos, 3);
-        Pen edgePen(&edgeBrush, 1.0f);
         g.SetClip(RectF(0.0f, 1.0f, (float)fullWidth, (float)height));
-        g.DrawPath(&edgePen, &notchPath);
+        if (perf.glow) {
+            LinearGradientBrush edgeBrush(diagA, diagB, Color(66, 255, 255, 255), Color(34, 255, 255, 255));
+            Color edgeColors[] = { Color(66, 255, 255, 255), Color(9, 255, 255, 255), Color(34, 255, 255, 255) };
+            REAL edgePos[] = { 0.0f, 0.4f, 1.0f };
+            edgeBrush.SetInterpolationColors(edgeColors, edgePos, 3);
+            Pen edgePen(&edgeBrush, 1.0f);
+            g.DrawPath(&edgePen, &notchPath);
+        } else {
+            Pen edgePen(Color(30, 255, 255, 255), 1.0f);
+            g.DrawPath(&edgePen, &notchPath);
+        }
         g.ResetClip();
 
         // Content is laid out between the shoulders
@@ -406,6 +421,7 @@ public:
             RectF leftSlot(10.0f, 7.0f, 20.0f, 20.0f), rightSlot((float)(width - 60), 0.0f, 50.0f, (float)height);
             std::wstring centerText, rightText;
             SolidBrush* rightBrush = &textWhite;
+            bool fit = false, rightUsed = true;
             bool pomoOn = pomo.state.isRunning, music = media.currentTitle != media.idleTitle;
             SYSTEMTIME st;
             GetLocalTime(&st);
@@ -416,18 +432,45 @@ public:
                 centerText = notice;
                 rightText = noticeRight;
                 rightBrush = &noticeBrush;
-            } else if (pomoOn) {
+            } else if (pomoOn || (activeTab == TAB_POMODORO && g_settings.pillPomoIdle)) { // running, or its tab was left selected: the timer at a glance
                 tile(Color(255, 150, 45, 45));
                 g.DrawString(tabIcons[TAB_POMODORO], -1, &iconSmall, leftSlot, &center, &textWhite);
                 centerText = pomo.state.isBreak ? L"Descanso" : L"Enfoque";
+                if (!pomoOn) centerText += pomo.state.remainingSeconds < pomo.state.totalSeconds ? L" · en pausa" : L" · listo";
+                if (g_settings.pillPomoSessions) centerText += L" · " + std::to_wstring(pomo.state.sessionsCompleted) + (pomo.state.sessionsCompleted == 1 ? L" sesión" : L" sesiones");
                 rightText = pomo.GetFormattedTime();
+                fit = true;
                 float frac = pomo.state.totalSeconds > 0 ? 1.0f - (float)pomo.state.remainingSeconds / pomo.state.totalSeconds : 0.0f;
                 Pen trackPen(Color(30, 255, 255, 255), 2.0f), fillPen(Color(255, 239, 68, 68), 2.0f);
                 float lineW = (float)(width - 32), y = (float)(height - 4);
-                g.DrawLine(&trackPen, 16.0f, y, 16.0f + lineW, y);
-                if (frac > 0.0f) g.DrawLine(&fillPen, 16.0f, y, 16.0f + lineW * (std::min)(1.0f, frac), y);
+                if (g_settings.pillPomoBar) g.DrawLine(&trackPen, 16.0f, y, 16.0f + lineW, y);
+                if (g_settings.pillPomoBar && frac > 0.0f) g.DrawLine(&fillPen, 16.0f, y, 16.0f + lineW * (std::min)(1.0f, frac), y);
+            } else if (activeTab == TAB_SYSTEM && g_settings.pillSys) {
+                // Sistema left selected: its figures at a glance (the app keeps sampling while this shows); the pill widens to fit
+                tile(Color(255, 34, 37, 48));
+                SolidBrush accentB(ACCENT);
+                g.DrawString(tabIcons[TAB_SYSTEM], -1, &iconSmall, leftSlot, &center, &accentB);
+                auto whole = [](float v) { return std::to_wstring((int)lroundf(v)); };
+                bool temps = g_settings.sysTemps;
+                auto part = [&](const std::wstring& s) { centerText += (centerText.empty() ? L"" : L"  ·  ") + s; }; // only what Settings → Sistema leaves on
+                if (g_settings.pillSysCpu) part(L"CPU " + whole(sys.cpu) + L" %" + (temps && sys.cpuTemp >= 0 ? L" " + whole(sys.cpuTemp) + L"°" : L""));
+                if (g_settings.pillSysGpu && temps && sys.gpuTemp >= 0) part(L"GPU " + whole(sys.gpuTemp) + L"°");
+                if (g_settings.pillSysRam && sys.memTotalGb > 0) part(L"RAM " + whole(100.0f * sys.memUsedGb / sys.memTotalGb) + L" %");
+                if (g_settings.pillSysDisk && sys.diskTotalGb > 0) part(L"C: " + whole(sys.diskFreeGb) + L" GB");
+                if (centerText.empty()) centerText = L"Sistema";
+                float w = fabsf(sys.batteryW);
+                if (!g_settings.pillSysPower) {
+                } else if (g_settings.sysPower && sys.batteryWKnown && w >= 0.05f) { // one decimal under 10 W so it fits the slot
+                    wchar_t buf[16];
+                    swprintf(buf, 16, w < 10.0f ? L"%.1f W" : L"%.0f W", w);
+                    rightText = (sys.batteryW > 0 ? L"+" : L"−") + std::wstring(buf);
+                } else if (sys.battery >= 0) {
+                    rightText = std::to_wstring(sys.battery) + L" %";
+                }
+                fit = true;
+                rightUsed = !rightText.empty();
             } else if (music) {
-                if (media.art) {
+                if (media.art && g_settings.pillArt) {
                     FillArt(g, media.art, 10.0f, 7.0f, 20.0f, 6.0f);
                 } else {
                     tile(Color(255, 44, 48, 58));
@@ -435,7 +478,7 @@ public:
                 }
                 // The sung line replaces the title (the notch widens to fit it); instrumental breaks fall back to the title
                 centerText = ClosedLyric(media, pomo);
-                if (centerText.empty()) centerText = media.currentTitle;
+                if (centerText.empty()) centerText = media.currentTitle + (g_settings.pillArtist && !media.currentArtist.empty() ? L" · " + media.currentArtist : L"");
                 // Equalizer: 4 bars dancing while playing, flat at 4 px when paused
                 const Color& tn = media.tint[1];
                 SolidBrush bar(Color(255, (tn.GetR() + 255) / 2, (tn.GetG() + 255) / 2, (tn.GetB() + 255) / 2));
@@ -469,11 +512,14 @@ public:
                 wsprintfW(clock, L"%02d:%02d", st.wHour, st.wMinute);
                 rightText = clock;
             }
-            if (centerText != pillText) { // measured only when the text changes; the app widens the pill to pillWidth
-                pillText = centerText;
-                pillWidth = ClosedWidthFor(centerText);
+            // Measured only when what is shown changes; the app resizes the pill to pillWidth. The views composed in Settings
+            // (fit) hug their content, so switching a figure on or off there widens or narrows the pill.
+            std::wstring key = centerText + (fit ? L"\x1" : L"") + (rightUsed ? L"" : L"\x2");
+            if (key != pillText) {
+                pillText = key;
+                pillWidth = ClosedWidthFor(centerText, fit ? CLOSED_FIT_MIN : CLOSED_W, rightUsed ? CLOSED_CHROME : CLOSED_CHROME_LEFT);
             }
-            g.DrawString(centerText.c_str(), -1, &fontSmall, RectF(36.0f, 0.0f, (float)(width - 92), (float)height), &center, &textWhite);
+            g.DrawString(centerText.c_str(), -1, &fontSmall, RectF(36.0f, 0.0f, (float)(width - (rightUsed ? 92 : 48)), (float)height), &center, &textWhite);
             g.DrawString(rightText.c_str(), -1, &fontSmallBold, rightSlot, &rightMid, rightBrush);
         } else {
             // === EXPANDED NOTCH VIEW ===
@@ -481,7 +527,7 @@ public:
             const wchar_t* tabNames[] = { L"Música", L"Pomodoro", L"Tareas", L"Calendario", L"IA", L"Clima", L"Sistema" };
             // One highlight glides from the previous tab to the active one (tabEase 1 when settled)
             tabHits.clear();
-            float tabP = (std::min)(1.0f, (float)(GetTickCount64() - tabChangedAt) / TAB_ANIM_MS);
+            float tabP = perf.anim ? (std::min)(1.0f, (float)(GetTickCount64() - tabChangedAt) / TAB_ANIM_MS) : 1.0f;
             float tabEase = 1.0f - (1.0f - tabP) * (1.0f - tabP) * (1.0f - tabP);
             GraphicsPath tabPath;
             AddRoundRect(tabPath, 16.0f + (tabFrom + (activeTab - tabFrom) * tabEase) * TAB_STEP, 8.0f, (float)TAB_W, 30.0f, 10.0f);
@@ -507,8 +553,13 @@ public:
                 // Album art tile
                 GraphicsPath art;
                 AddRoundRect(art, 20.0f, 52.0f, 56.0f, 56.0f, 12.0f);
-                LinearGradientBrush artBg(PointF(20.0f, 52.0f), PointF(77.0f, 109.0f), Color(255, 120, 136, 180), Color(255, 30, 36, 56));
-                g.FillPath(&artBg, &art);
+                if (perf.glow) {
+                    LinearGradientBrush artBg(PointF(20.0f, 52.0f), PointF(77.0f, 109.0f), Color(255, 120, 136, 180), Color(255, 30, 36, 56));
+                    g.FillPath(&artBg, &art);
+                } else {
+                    SolidBrush artBg(Color(255, 44, 48, 58));
+                    g.FillPath(&artBg, &art);
+                }
                 g.DrawString(L"", -1, &iconBig, RectF(20.0f, 52.0f, 56.0f, 56.0f), &center, &textWhite);
 
                 if (media.art) FillArt(g, media.art, 20.0f, 52.0f, 56.0f, 12.0f);
@@ -566,7 +617,7 @@ public:
                         lyricChangedAt = GetTickCount64();
                     }
                     // "Slide": the new line rises 10 px and fades in over 260 ms, ease-out
-                    float p = (std::min)(1.0f, (GetTickCount64() - lyricChangedAt) / (float)LYRIC_SLIDE_MS);
+                    float p = perf.anim ? (std::min)(1.0f, (GetTickCount64() - lyricChangedAt) / (float)LYRIC_SLIDE_MS) : 1.0f;
                     float ease = 1.0f - (1.0f - p) * (1.0f - p) * (1.0f - p);
 
                     Font fontLyric(&fontFamily, 15.0f, FontStyleBold, UnitPoint);
@@ -1324,7 +1375,7 @@ public:
             g.Restore(gs);
 
             // Veil over the content: fades during a tab switch, and while the notch is still opening (then it covers the tab row too)
-            float openVeil = 1.0f - std::clamp((height - 60) / 110.0f, 0.0f, 1.0f);
+            float openVeil = perf.anim ? 1.0f - std::clamp((height - 60) / 110.0f, 0.0f, 1.0f) : 0.0f;
             float veil = (std::max)(1.0f - tabEase, openVeil);
             if (veil > 0.0f) {
                 GraphicsState vs = g.Save();

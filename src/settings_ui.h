@@ -25,7 +25,7 @@ struct SettingsHooks {
 
 class SettingsWindow {
 public:
-    enum Section { SEC_GENERAL, SEC_PILL, SEC_MUSIC, SEC_POMODORO, SEC_CALENDAR, SEC_ACCOUNTS, SEC_WEATHER, SEC_SYSTEM, SEC_AI, SEC_ABOUT, SEC_COUNT };
+    enum Section { SEC_GENERAL, SEC_PILL, SEC_MUSIC, SEC_POMODORO, SEC_CALENDAR, SEC_ACCOUNTS, SEC_WEATHER, SEC_SYSTEM, SEC_PERF, SEC_AI, SEC_ABOUT, SEC_COUNT };
 
     // The tab gear opens the section of its tab
     static int SectionOfTab(int tab) { static const int s[] = { SEC_MUSIC, SEC_POMODORO, SEC_GENERAL, SEC_CALENDAR, SEC_AI, SEC_WEATHER, SEC_SYSTEM }; return s[tab]; }
@@ -70,7 +70,7 @@ public:
         wnd = CreateWindowExW(WS_EX_LAYERED, L"CapriSettingsWindow", L"Configuración · Capri Notch", style, x, y, ww, wh, NULL, NULL,
                               GetModuleHandleW(NULL), NULL);
         if (!wnd) return;
-        SetLayeredWindowAttributes(wnd, 0, 0, LWA_ALPHA); // the open fade starts invisible
+        SetLayeredWindowAttributes(wnd, 0, EffectivePerf().anim ? 0 : 255, LWA_ALPHA); // the open fade starts invisible
         openAt = GetTickCount64();
         Animate();
         BOOL dark = TRUE;
@@ -123,11 +123,15 @@ public:
 private:
     // Layout in logical px (the window is scaled by DPI). Rows scroll inside [TOP, BOTTOM).
     static constexpr float W = 780, H = 540, SIDE = 200, CX = 232, CR = 756, TOP = 84, BOTTOM = 524, ROW = 56;
+    static constexpr float SIDE_TOP = 40.0f, SIDE_STEP = 44.0f; // sidebar rows: 11 of them, so they start above the content's TOP
 
     // Controls: what a row is, by id
     enum Id { ID_START, ID_HOVER_OPEN, ID_HOVER_MS, ID_LEAVE_MS, ID_TUCK, ID_FULLSCREEN, ID_EYES, ID_SLEEP, ID_EQUALIZER,
               ID_CHARGER, ID_LYRICS, ID_FOCUS, ID_BREAK, ID_POMO_SOUND, ID_CAL_VIEW, ID_ALERT, ID_CATEGORY, ID_REMIND_SOUND,
-              ID_SYNC_MIN, ID_AI_PROVIDER, ID_AI_HTTPS, ID_WEATHER_AUTO, ID_SYS_TEMPS, ID_SYS_POWER, ID_TASKS_CAL };
+              ID_SYNC_MIN, ID_AI_PROVIDER, ID_AI_HTTPS, ID_WEATHER_AUTO, ID_SYS_TEMPS, ID_SYS_POWER, ID_TASKS_CAL,
+              ID_PILL_ART, ID_PILL_ARTIST, ID_PILL_POMO_IDLE, ID_PILL_POMO_BAR, ID_PILL_POMO_SESSIONS, ID_PILL_SYS, ID_PILL_SYS_CPU,
+              ID_PILL_SYS_GPU, ID_PILL_SYS_RAM, ID_PILL_SYS_DISK, ID_PILL_SYS_POWER, // the ID_PILL_ block follows PillFlags' order
+              ID_PERF_ANIM, ID_PERF_GLOW, ID_PERF_SAVER, ID_PERF_FPS, ID_PERF_SENSOR };
     enum Field { F_HOST, F_PATH, F_MODEL, F_PORT, F_KEY, F_G_URL, F_MS_ID, F_ICS, F_WCITY };
     enum BtnId { B_MONITOR, B_CLEAR_KEY, B_DATA, B_QUIT, B_GUIDE, B_COPY_SCRIPT, B_ACC_CONNECT, B_ACC_DISCONNECT, B_ACC_SYNC };
     enum HitKind { HK_SECTION, HK_BOOL, HK_STEP, HK_CHIP, HK_FIELD, HK_BUTTON };
@@ -157,7 +161,7 @@ private:
     static float Scale(HWND h) { return GetDpiForWindow(h) / 96.0f; }
 
     static float ChipY() {
-        float to = 64.0f + section * 44.0f;
+        float to = SIDE_TOP + section * SIDE_STEP;
         return chipFrom + (to - chipFrom) * Ease(secAt, SECTION_MS);
     }
 
@@ -190,6 +194,7 @@ private:
 
     // Ease-out from the start time at, over ms. at 0 = never started, so already done.
     static float Ease(ULONGLONG at, ULONGLONG ms) {
+        if (!EffectivePerf().anim) return 1.0f; // animations off: everything is at its final state at once
         ULONGLONG el = at ? GetTickCount64() - at : ms;
         if (el >= ms) return 1.0f;
         float t = 1.0f - el / (float)ms;
@@ -224,6 +229,7 @@ private:
 
     static bool* BoolOf(int id) {
         Settings& s = g_settings;
+        if (id >= ID_PILL_ART && id <= ID_PILL_SYS_POWER) return PillFlags(s)[id - ID_PILL_ART].second;
         switch (id) {
         case ID_START: return &s.startWithWindows;
         case ID_HOVER_OPEN: return &s.hoverOpen;
@@ -239,6 +245,9 @@ private:
         case ID_SYS_TEMPS: return &s.sysTemps;
         case ID_SYS_POWER: return &s.sysPower;
         case ID_TASKS_CAL: return &s.tasksInCalendar;
+        case ID_PERF_ANIM: return &s.perfAnimations;
+        case ID_PERF_GLOW: return &s.perfGlow;
+        case ID_PERF_SAVER: return &s.perfBatterySaver;
         default: return &s.aiHttps; // ID_AI_HTTPS
         }
     }
@@ -260,6 +269,8 @@ private:
         case ID_CAL_VIEW: return &s.calDefaultView;
         case ID_CATEGORY: return &s.defaultCategory;
         case ID_SYNC_MIN: return &s.syncMinutes;
+        case ID_PERF_FPS: return &s.perfFps;
+        case ID_PERF_SENSOR: return &s.perfSensorSec;
         default: return &s.aiProvider; // ID_AI_PROVIDER
         }
     }
@@ -269,6 +280,8 @@ private:
         case ID_CAL_VIEW: return { { L"Agenda", L"Día", L"Semana", L"Mes" }, { 0, 1, 2, 3 } };
         case ID_ALERT: return { { L"Ninguno", L"Al empezar", L"10 min", L"30 min", L"1 h" }, { 0, 1, 2, 4, 8 } }; // alert bits, see AlertMask
         case ID_SYNC_MIN: return { { L"5 min", L"15 min", L"30 min" }, { 5, 15, 30 } };
+        case ID_PERF_FPS: return { { L"60 fps", L"30 fps" }, { 60, 30 } };
+        case ID_PERF_SENSOR: return { { L"1 s", L"2 s", L"5 s" }, { 1, 2, 5 } };
         default: return { { L"OpenAI", L"DeepSeek", L"Ollama local", L"Personalizado" }, { 0, 1, 2, 3 } }; // ID_AI_PROVIDER
         }
     }
@@ -513,7 +526,8 @@ private:
         }
 
         g.Clear(Color(255, 14, 15, 18));
-        g.FillRectangle(&side, 0.0f, 0.0f, SIDE, H);
+        SolidBrush sideSolid(Color(255, 20, 21, 25));
+        g.FillRectangle(EffectivePerf().glow ? (Brush*)&side : (Brush*)&sideSolid, 0.0f, 0.0f, SIDE, H);
         g.DrawLine(&surfaceEdge, SIDE, 0.0f, SIDE, H);
 
         auto fillRound = [&](Brush* b, float x, float y, float w, float h, float r) {
@@ -527,12 +541,12 @@ private:
         auto hot = [&](const RectF& r) { return r.Contains(hx, hy) != FALSE; };
 
         // Sidebar: icon and name per section; the active one sits on a chip
-        static const wchar_t* secIcon[] = { L"", L"", L"", L"", L"", L"", L"\uE706", L"\uE950", L"", L"" };
-        static const wchar_t* secName[] = { L"General", L"Píldora", L"Música", L"Pomodoro", L"Calendario", L"Cuentas", L"Clima", L"Sistema", L"IA", L"Acerca de" };
+        static const wchar_t* secIcon[] = { L"", L"", L"", L"", L"", L"", L"\uE706", L"\uE950", L"\uEC4A", L"", L"" };
+        static const wchar_t* secName[] = { L"General", L"Píldora", L"Música", L"Pomodoro", L"Calendario", L"Cuentas", L"Clima", L"Sistema", L"Rendimiento", L"IA", L"Acerca de" };
         fillRound(&chip, 12.0f, ChipY(), 176.0f, 36.0f, 9.0f); // slides from the old section to the new one
         fillRound(&accentB, 12.0f, ChipY() + 9.0f, 3.0f, 18.0f, 1.5f); // accent bar on the chip's left edge
         for (int i = 0; i < SEC_COUNT; ++i) {
-            float y = 64.0f + i * 44.0f;
+            float y = SIDE_TOP + i * SIDE_STEP;
             bool on = i == section;
             if (!on && hot(RectF(12.0f, y, 176.0f, 36.0f))) fillRound(&sideHot, 12.0f, y, 176.0f, 36.0f, 9.0f);
             g.DrawString(secIcon[i], -1, &fIcon, RectF(22.0f, y, 24.0f, 36.0f), &center, on ? &accentB : &textDim);
@@ -662,20 +676,23 @@ private:
             row(L"Monitor", L"Muestra la píldora en la siguiente pantalla"); button(CR - 170.0f, B_MONITOR, 0, 170.0f, L"Mover al otro monitor"); next();
             break;
         case SEC_PILL:
-            row(L"Ojos", L"Mascota en reposo; sin ojos se ve el calendario"); toggle(ID_EYES); next();
             row(L"Dormir tras", L"Cierra los ojos tras estos minutos sin usar el equipo"); stepper(ID_SLEEP); next();
-            row(L"Ecualizador", L"Barras animadas mientras suena música"); toggle(ID_EQUALIZER); next();
             row(L"Aviso del cargador", L"Aviso al enchufar o desenchufar"); toggle(ID_CHARGER); next();
             row(L"Letra en la píldora", L"La línea que suena, si las letras están activas"); toggle(ID_LYRICS); next();
             break;
         case SEC_MUSIC:
             row(L"Letra en la píldora", L"Igual que en Píldora"); toggle(ID_LYRICS); next();
+            row(L"Compacta: carátula", L"La portada del disco a la izquierda"); toggle(ID_PILL_ART); next();
+            row(L"Compacta: artista", L"Título · artista en vez de solo el título"); toggle(ID_PILL_ARTIST); next();
             row(L"Letras", L"LRCLIB: gratis, sin cuenta. Actívalas con el botón de la pestaña Música."); next();
             break;
         case SEC_POMODORO:
             row(L"Enfoque", L"Duración de cada sesión de trabajo"); stepper(ID_FOCUS); next();
             row(L"Descanso", L"Duración de cada pausa"); stepper(ID_BREAK); next();
             row(L"Sonido al terminar", L"Pitido al cambiar de fase"); toggle(ID_POMO_SOUND); next();
+            row(L"Compacta: verlo parado", L"El temporizador en la píldora aunque no corra"); toggle(ID_PILL_POMO_IDLE); next();
+            row(L"Compacta: barra de progreso", L"Línea roja bajo la píldora"); toggle(ID_PILL_POMO_BAR); next();
+            row(L"Compacta: sesiones", L"Añade las sesiones completadas hoy"); toggle(ID_PILL_POMO_SESSIONS); next();
             break;
         case SEC_CALENDAR:
             row(L"Vista inicial", L"Con la que se abre el calendario al arrancar", 200.0f); chips(ID_CAL_VIEW); next();
@@ -710,6 +727,21 @@ private:
         case SEC_SYSTEM:
             row(L"Temperaturas", L"CPU y GPU, cuando Windows las ofrece"); toggle(ID_SYS_TEMPS); next();
             row(L"Potencia de la batería", L"Vatios que entran o salen"); toggle(ID_SYS_POWER); next();
+            row(L"Vista compacta", L"El sistema en la píldora, con esta pestaña elegida"); toggle(ID_PILL_SYS); next();
+            row(L"Compacta: CPU", L"Uso y, con Temperaturas, sus grados"); toggle(ID_PILL_SYS_CPU); next();
+            row(L"Compacta: GPU", L"Temperatura de la gráfica"); toggle(ID_PILL_SYS_GPU); next();
+            row(L"Compacta: memoria", L"Porcentaje de RAM en uso"); toggle(ID_PILL_SYS_RAM); next();
+            row(L"Compacta: disco", L"Espacio libre en C:"); toggle(ID_PILL_SYS_DISK); next();
+            row(L"Compacta: batería", L"A la derecha: vatios, o el porcentaje si no hay dato"); toggle(ID_PILL_SYS_POWER); next();
+            break;
+        case SEC_PERF:
+            row(L"Animaciones", L"Rebote al abrir, cambio de pestaña y transiciones"); toggle(ID_PERF_ANIM); next();
+            row(L"Fotogramas", L"Menos fotogramas, menos uso de CPU"); chips(ID_PERF_FPS); next();
+            row(L"Luz ambiental y degradados", L"El brillo de color del panel y los fondos degradados"); toggle(ID_PERF_GLOW); next();
+            row(L"Lectura de sensores", L"Cada cuánto se leen CPU, GPU y batería en Sistema"); chips(ID_PERF_SENSOR); next();
+            row(L"Ahorro con batería", L"Sin animaciones ni luces y a 30 fps al desenchufar"); toggle(ID_PERF_SAVER); next();
+            row(L"Ecualizador", L"Barras animadas en la píldora mientras suena música"); toggle(ID_EQUALIZER); next();
+            row(L"Ojos", L"Mascota que parpadea en reposo; sin ojos, un calendario"); toggle(ID_EYES); next();
             break;
         case SEC_AI:
             row(L"Proveedor", L"Dónde se envían tus preguntas", 150.0f); chips(ID_AI_PROVIDER); next();

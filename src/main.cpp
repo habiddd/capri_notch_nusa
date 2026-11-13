@@ -133,6 +133,7 @@ public:
     ULONGLONG livePaintAt = 0; // last repaint for the collapsed pill's animation
     int lastAc = -1;           // charger state last seen (0/1), -1 until known
     int reminderMinute = -1;   // minute of day the event reminders last ran for
+    int sensorTick = 0;        // seconds since the Sistema tab was opened: perfSensorSec picks which ones read the sensors
 
     // Window dimensions & animation (widths include both notch shoulders)
     int currentWidth = 220 + 2 * NOTCH_SHOULDER;
@@ -208,9 +209,9 @@ public:
         AllocBuffer((int)(BUF_W * scale), (int)(BUF_H * scale));
         SYSTEM_POWER_STATUS ps;
         if (GetSystemPowerStatus(&ps) && !(ps.BatteryFlag & 128) && ps.ACLineStatus != 255) lastAc = ps.ACLineStatus;
+        g_onBattery = lastAc == 0;
 
         // Whistle engine starts dormant/unloaded (0 MB RAM) until explicitly loaded by user button
-        SetTimer(hWnd, TIMER_ANIMATION, 16, NULL); // ~60fps smooth animation
         SetTimer(hWnd, TIMER_SECOND, 1000, NULL);  // 1s logic tick
         LoadSettings(SettingsIniPath(), g_settings);
         g_settings.startWithWindows = RunAtLogin(); // the Run key is the truth, not the ini
@@ -236,12 +237,16 @@ public:
             ui.weather.located = false;
             ui.weather.at = 0;
         }
+        ApplyFrameRate();
         ApplyVisibility();
         UpdateTargetDimensions();
         UpdateDisplay();
     }
 
     void ApplyVisibility() { ShowWindow(hWnd, hiddenByUser || hiddenByFullscreen ? SW_HIDE : SW_SHOWNOACTIVATE); }
+
+    // The animation timer's rate: 60 fps, or 30 when the performance settings say so (see EffectivePerf)
+    void ApplyFrameRate() { SetTimer(hWnd, TIMER_ANIMATION, 1000 / EffectivePerf().fps, NULL); }
 
     // Full-screen games, videos and presentations: the notch steps aside, and comes back when they end
     void CheckFullscreen() {
@@ -443,8 +448,15 @@ public:
         ULONGLONG now = GetTickCount64();
         float dt = animAt && now - animAt <= 50 ? (now - animAt) / 1000.0f : 0.016f;
         animAt = now;
-        capri_spring(&animW, &velW, (float)targetWidth, dt);
-        capri_spring(&animH, &velH, (float)targetHeight, dt);
+        bool anim = EffectivePerf().anim;
+        if (anim) {
+            capri_spring(&animW, &velW, (float)targetWidth, dt);
+            capri_spring(&animH, &velH, (float)targetHeight, dt);
+        } else { // animations off: the size jumps to its target
+            animW = (float)targetWidth;
+            animH = (float)targetHeight;
+            velW = velH = 0;
+        }
         int nw = (std::min)((int)lroundf(animW), BUF_W), nh = (std::min)((int)lroundf(animH), BUF_H);
         bool changed = nw != currentWidth || nh != currentHeight || velW != 0 || velH != 0 || animW != targetWidth || animH != targetHeight;
         currentWidth = nw;
@@ -452,7 +464,7 @@ public:
         int tuckTarget = tucked ? currentHeight - TUCK_EDGE : 0;
         if (tuckY != tuckTarget) {
             int diff = tuckTarget - tuckY;
-            int step = diff / 4;
+            int step = anim ? diff / 4 : diff; // animations off: the tuck jumps in one step
             if (step == 0) step = (diff > 0) ? 1 : -1;
             tuckY += step;
             changed = true;
@@ -471,6 +483,11 @@ public:
         if (!GetSystemPowerStatus(&ps) || (ps.BatteryFlag & 128) || ps.ACLineStatus == 255) return;
         int prev = lastAc;
         lastAc = ps.ACLineStatus;
+        if (g_onBattery != (lastAc == 0)) { // the battery saver follows the charger
+            g_onBattery = lastAc == 0;
+            ApplyFrameRate();
+            UpdateDisplay();
+        }
         if (prev < 0 || prev == lastAc || !g_settings.chargerNotice) return;
         ui.notice = lastAc ? L"Cargando" : L"Sin cargador";
         ui.noticeRight = ps.BatteryLifePercent == 255 ? L"" : std::to_wstring(ps.BatteryLifePercent) + L"%";
@@ -518,7 +535,7 @@ public:
         CheckFullscreen();
         pomo.Tick();
         media.DetectActiveTrack();
-        if (expanded && activeTab == TAB_SYSTEM) { // sampled only while shown: the CPU figure is a delta since the last call
+        if (activeTab == TAB_SYSTEM && sensorTick++ % g_settings.perfSensorSec == 0) { // sampled only while shown (open, or collapsed on this tab): the CPU figure is a delta since the last call
             capri_sys_sample(&ui.sys, g_settings.sysTemps, g_settings.sysPower);
             ui.cpuHist[ui.cpuHistPos] = ui.sys.cpu;
             ui.cpuHistPos = (ui.cpuHistPos + 1) % 60;
@@ -994,6 +1011,7 @@ public:
                     ui.editing = false;
                     if (i == TAB_CALENDAR) ui.CalHome();
                     if (i == TAB_WEATHER) FetchWeather();
+                    sensorTick = 0; // the first second on Sistema reads the sensors again
                     if (i == TAB_SYSTEM) capri_sys_sample(&ui.sys, g_settings.sysTemps, g_settings.sysPower); // memory and disk on the first paint; CPU follows a second later
                     UpdateTargetDimensions();
                     UpdateDisplay();

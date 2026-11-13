@@ -9,6 +9,8 @@ Aplicación ultraligera de Dynamic Notch / Dynamic Island para Windows 11 escrit
    - Píldora colapsada flotante (`220x34 px`) en la parte superior central de la pantalla. Muestra, por prioridad:
      aviso de cargador (3 s), pomodoro en curso (cuenta atrás y barra de progreso), música (carátula, título o letra y ecualizador)
      y, en reposo, los ojos de la mascota con el próximo evento de hoy, las tareas pendientes o la fecha, más el reloj.
+     La pestaña que dejes abierta también cuenta: con **Pomodoro** se ve el temporizador aunque esté parado, y con **Sistema**,
+     CPU, GPU, RAM y los vatios de la batería (la píldora se ensancha para que quepan; nunca crece en alto).
    - Píldora colapsada flotante (`220x34 px`) en la parte superior central de la pantalla.
    - Expansión animada fluida a 60 FPS (`460x250 px`) al hacer clic o mediante comando por voz.
    - Ventana por capas (`WS_EX_LAYERED`) con canal alfa por píxel y estética oscura fluida.
@@ -127,13 +129,14 @@ Se abre de tres formas: con el icono de la bandeja (clic), con clic derecho sobr
 El menú del icono de la bandeja tiene **Configuración**, **Ocultar notch** / **Mostrar notch**, **Mover al otro monitor** y **Salir de Capri Notch**.
 
 - **General**: iniciar con Windows (usuario actual), abrir al pasar el ratón, retraso al abrir y al cerrar, esconder al hacer clic al lado, ocultar en pantalla completa (desactivado por defecto), mover al otro monitor.
-- **Píldora**: ojos, dormir tras N minutos sin uso, ecualizador, aviso del cargador y letra en la píldora.
+- **Píldora**: dormir tras N minutos sin uso, aviso del cargador y letra en la píldora.
 - **Música**: la misma opción de letra y un recordatorio de que las letras son de LRCLIB.
 - **Pomodoro**: duración de enfoque (5 a 90 min) y descanso (1 a 30 min), y sonido al terminar. Con el temporizador parado, el cambio se aplica ya; en marcha, a partir del siguiente ciclo.
 - **Calendario**: vista inicial, avisos y categoría por defecto para los eventos nuevos, sonido de recordatorios y tareas con fecha en el calendario.
 - **Cuentas**: estado de Google, Outlook y el enlace ICS, con Conectar, Desconectar y Sincronizar ahora. Google: copiar el script y pegar la URL de la aplicación web (ver "Sincronizar calendario"). El ID de Microsoft se guarda en `capri_sync.ini`. Intervalo de sincronización de 5, 15 o 30 min.
 - **Clima**: detectar mi ubicación (la de Windows o, si no, la aproximada por IP) o una ciudad escrita; con el campo vacío es automática.
 - **Sistema**: temperaturas de CPU y GPU, y potencia de la batería, cuando Windows las ofrece.
+- **Rendimiento**: animaciones, fotogramas (60 o 30), luz ambiental y degradados, cada cuánto se leen los sensores de Sistema (1, 2 o 5 s) y ahorro con batería (sin animaciones ni luces y a 30 fps al desenchufar); también el ecualizador y los ojos de la píldora, que se mueven aunque las animaciones estén apagadas. Se aplican al instante.
 - **IA**: proveedor (OpenAI, DeepSeek, Ollama local o Personalizado), modelo y clave de API. Con Personalizado se editan también el servidor, la ruta, el puerto y HTTPS. Ollama no necesita clave.
 - **Acerca de**: versión, memoria en uso, abrir la carpeta de datos y salir.
 

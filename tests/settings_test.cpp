@@ -47,6 +47,15 @@ int main() {
     assert(r.aiProvider == 3 && r.aiHost == L"ia.ejemplo.es" && r.aiPath == L"/api/chat" && r.aiModel == L"modelo ñandú");
     assert(r.aiPort == 8443 && !r.aiHttps);
     assert(!r.sysTemps && !r.sysPower && !r.weatherAuto && r.weatherCityName == L"Bogotá");
+    {   // every collapsed-view switch survives a save and load when flipped from its default
+        Settings d, f, back;
+        for (auto& p : PillFlags(f)) *p.second = !*p.second;
+        assert(SaveSettings(L"pill_flags_test.ini", f) && LoadSettings(L"pill_flags_test.ini", back));
+        auto dv = PillFlags(d), bv = PillFlags(back);
+        assert(dv.size() == 11);
+        for (size_t i = 0; i < dv.size(); ++i) assert(*bv[i].second == !*dv[i].second);
+        DeleteFileW(L"pill_flags_test.ini");
+    }
 
     // Out-of-range, not in the list, garbage, unknown keys: the defaults, and the valid lines around them still count
     std::string bad = "hoverDelay=5000\r\nleaveDelay=50\r\nfocusMin=abc\r\nbreakMin=\r\nsyncMinutes=7\r\ndefaultAlert=5\r\n"
@@ -109,6 +118,37 @@ int main() {
     std::wstring o2 = SetIniValue(o, L"mi_clave", L"ms1");
     assert(IniValue(o2, L"mi_clave") == L"ms1" && ParseSyncConfig(o2).microsoftId == L"abc");
     assert(IniValue(SetIniValue(L"", L"microsoft_client_id", L"s"), L"microsoft_client_id") == L"s");
+
+    // Performance: defaults, round trip, values outside their list are ignored
+    Settings pd;
+    assert(pd.perfAnimations && pd.perfGlow && pd.perfFps == 60 && pd.perfSensorSec == 1 && !pd.perfBatterySaver);
+    Settings pw;
+    pw.perfAnimations = false; pw.perfGlow = false; pw.perfFps = 30; pw.perfSensorSec = 5; pw.perfBatterySaver = true;
+    assert(SaveSettings(ini, pw));
+    Settings pr;
+    assert(LoadSettings(ini, pr));
+    assert(!pr.perfAnimations && !pr.perfGlow && pr.perfFps == 30 && pr.perfSensorSec == 5 && pr.perfBatterySaver);
+    assert(WriteBytesFile(ini, "perfFps=45\r\nperfSensorSec=3\r\n"));
+    Settings po;
+    assert(LoadSettings(ini, po));
+    assert(po.perfFps == 60 && po.perfSensorSec == 1);
+
+    // EffectivePerf: the battery saver applies only when on and unplugged
+    Settings ep;
+    Perf a = EffectivePerf(ep, false);
+    assert(a.anim && a.glow && a.fps == 60);
+    ep.perfBatterySaver = true;
+    a = EffectivePerf(ep, true);
+    assert(!a.anim && !a.glow && a.fps == 30);
+    a = EffectivePerf(ep, false);
+    assert(a.anim && a.glow && a.fps == 60);
+    Settings ef;
+    ef.perfAnimations = false; ef.perfFps = 30;
+    a = EffectivePerf(ef, true); // saver off: on battery changes nothing
+    assert(!a.anim && a.glow && a.fps == 30);
+    ef.perfBatterySaver = true; ef.perfGlow = false; ef.perfAnimations = true;
+    a = EffectivePerf(ef, true);
+    assert(!a.anim && !a.glow && a.fps == 30);
 
     DeleteFileW(ini.c_str());
     std::printf("settings_test ok\n");

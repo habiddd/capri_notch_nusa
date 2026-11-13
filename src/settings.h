@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <algorithm>
 #include <initializer_list>
 #include <string>
 #include "oauth.h"
@@ -35,13 +36,31 @@ struct Settings {
     bool aiHttps = true;
     // Sistema: CPU and GPU temperatures, and battery watts, when Windows offers them
     bool sysTemps = true, sysPower = true;
+    // What each tab's collapsed view shows (the pill only ever grows sideways)
+    bool pillArt = true, pillArtist = false;                               // music: cover, "title · artist"
+    bool pillPomoIdle = true, pillPomoBar = true, pillPomoSessions = false; // pomodoro: shown while stopped, progress line, session count
+    bool pillSys = true, pillSysCpu = true, pillSysGpu = true, pillSysRam = true, pillSysDisk = false, pillSysPower = true;
     // Clima: the place is where the user is (Windows location, else IP) unless a city is typed (empty = automatic)
     bool weatherAuto = true;
     std::wstring weatherCityName;
+    // Performance
+    bool perfAnimations = true;    // resize spring, tab/open/lyric transitions, settings-window transitions
+    bool perfGlow = true;          // ambient light and gradients
+    int perfFps = 60;              // 60 or 30: rate of the animation timer
+    int perfSensorSec = 1;         // 1, 2 or 5: seconds between Sistema readings
+    bool perfBatterySaver = false; // on battery: no animations, no glow, at most 30 fps
 };
 
 inline Settings g_settings;
 inline constexpr const wchar_t* APP_VERSION = L"1.0";
+
+inline bool g_onBattery = false; // kept up to date by the app (main.cpp) from the power status
+struct Perf { bool anim, glow; int fps; };
+// The performance settings as they apply right now: the battery saver, when on and unplugged, overrides the three of them
+inline Perf EffectivePerf(const Settings& s = g_settings, bool onBattery = g_onBattery) {
+    bool save = s.perfBatterySaver && onBattery;
+    return { s.perfAnimations && !save, s.perfGlow && !save, save ? (std::min)(s.perfFps, 30) : s.perfFps };
+}
 
 struct AiEndpoint { std::wstring host, path, model; int port; bool https; bool needKey; };
 
@@ -54,6 +73,14 @@ inline AiEndpoint AiPreset(const Settings& s) {
     case 3: return { s.aiHost, s.aiPath, model(L"gpt-4o-mini"), s.aiPort, s.aiHttps, false };
     default: return { L"api.openai.com", L"/v1/chat/completions", model(L"gpt-4o-mini"), 443, true, true };
     }
+}
+
+// The collapsed-view switches with their ini keys: one list, so load and save cannot drift apart
+inline std::vector<std::pair<const wchar_t*, bool*>> PillFlags(Settings& s) {
+    return { { L"pillArt", &s.pillArt }, { L"pillArtist", &s.pillArtist }, { L"pillPomoIdle", &s.pillPomoIdle },
+             { L"pillPomoBar", &s.pillPomoBar }, { L"pillPomoSessions", &s.pillPomoSessions }, { L"pillSys", &s.pillSys },
+             { L"pillSysCpu", &s.pillSysCpu }, { L"pillSysGpu", &s.pillSysGpu }, { L"pillSysRam", &s.pillSysRam },
+             { L"pillSysDisk", &s.pillSysDisk }, { L"pillSysPower", &s.pillSysPower } };
 }
 
 inline std::wstring SettingsIniPath() { return AppDataFile(L"capri_settings.ini"); }
@@ -108,8 +135,14 @@ inline bool LoadSettings(const std::wstring& path, Settings& s) {
     flag(L"aiHttps", s.aiHttps);
     flag(L"sysTemps", s.sysTemps);
     flag(L"sysPower", s.sysPower);
+    for (auto& f : PillFlags(s)) flag(f.first, *f.second);
     flag(L"weatherAuto", s.weatherAuto);
     str(L"weatherCityName", s.weatherCityName);
+    flag(L"perfAnimations", s.perfAnimations);
+    flag(L"perfGlow", s.perfGlow);
+    numIn(L"perfFps", s.perfFps, { 30, 60 });
+    numIn(L"perfSensorSec", s.perfSensorSec, { 1, 2, 5 });
+    flag(L"perfBatterySaver", s.perfBatterySaver);
     return true;
 }
 
@@ -146,8 +179,14 @@ inline bool SaveSettings(const std::wstring& path, const Settings& s) {
     line(L"aiHttps", flag(s.aiHttps));
     line(L"sysTemps", flag(s.sysTemps));
     line(L"sysPower", flag(s.sysPower));
+    for (auto& f : PillFlags(const_cast<Settings&>(s))) line(f.first, flag(*f.second));
     line(L"weatherAuto", flag(s.weatherAuto));
     line(L"weatherCityName", s.weatherCityName);
+    line(L"perfAnimations", flag(s.perfAnimations));
+    line(L"perfGlow", flag(s.perfGlow));
+    line(L"perfFps", std::to_wstring(s.perfFps));
+    line(L"perfSensorSec", std::to_wstring(s.perfSensorSec));
+    line(L"perfBatterySaver", flag(s.perfBatterySaver));
     return WriteBytesFile(path, Utf8(t));
 }
 
