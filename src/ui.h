@@ -50,12 +50,11 @@ public:
     std::wstring lyricText;
     ULONGLONG lyricChangedAt = 0;
 
-    // Task list view state: first visible row, and the add field's text while typing
-    size_t todoTop = 0;
-    bool editing = false; // typing into a text field (tasks, or the calendar event window)
+    // Task list (inside the calendar's agenda): the add field's text while typing
+    bool editing = false; // typing into a text field (the agenda's task field, or the calendar event window)
     std::wstring todoDraft;
     size_t todoParent = SIZE_MAX; // task the field adds a subtask to; SIZE_MAX adds a normal task
-    static constexpr size_t TODO_ROWS = 4;
+    size_t calTaskRow = 0; // from the last agenda paint: the agenda row of the first task
     // Archivos: first visible row, whether a drop or a click sends (true) or keeps/opens (false), and the footer note of the last send
     size_t shelfTop = 0;
     bool shelfSend = false;
@@ -107,7 +106,7 @@ public:
            HIT_COLOR, HIT_MOVE, HIT_REPEAT, HIT_EDIT, HIT_DELETE, HIT_NEW,
            HIT_POP_BACK, HIT_POP_CARD, HIT_POP_TITLE, HIT_POP_NOTES, HIT_POP_DATE, HIT_POP_ALLDAY, HIT_POP_START, HIT_POP_END,
            HIT_POP_REPEAT, HIT_POP_COLOR, HIT_POP_ALERT, HIT_POP_SAVE, HIT_POP_DELETE, HIT_POP_CANCEL, HIT_POP_SOURCE,
-           HIT_POP_TASK, HIT_TASK_DONE };
+           HIT_POP_TASK, HIT_TASK_DONE, HIT_T_TOGGLE, HIT_T_REMOVE, HIT_T_SUB, HIT_T_FIELD, HIT_T_ADD };
     struct CalHit { Gdiplus::RectF r; int kind, a, b; };
     std::vector<CalHit> calHits;
     std::vector<CalHit> tabHits; // clickable areas of the clock and weather tabs (rebuilt on every expanded paint)
@@ -166,7 +165,7 @@ public:
     }
     // Reminders and the idle pill skip a done task, and a dated task while tasksInCalendar is off
     static bool RemindsFor(const CalEvent& e) { return e.task == 0 || (e.task == 1 && g_settings.tasksInCalendar); }
-    // The dated tasks the Tareas tab lists first (indices into ev.events, stored order); none while tasksInCalendar is off.
+    // The dated tasks the agenda's task list shows first (indices into ev.events, stored order); none while tasksInCalendar is off.
     // Callers take it fresh after every change to the events, since the indices move.
     static std::vector<size_t> DatedTasks(const EventManager& ev, int today) {
         std::vector<size_t> out;
@@ -437,7 +436,7 @@ public:
             f->SetFormatFlags(StringFormatFlagsNoWrap);
         }
 
-        const wchar_t* tabIcons[] = { L"", L"", L"", L"",L"",L"",L"", L"\uE8B7" };
+        const wchar_t* tabIcons[] = { L"", L"", L"",L"",L"",L"", L"\uE8B7" };
         if (!expanded) {
             // === COLLAPSED NOTCH === left tile / centered text / right value; the first state that applies wins
             ULONGLONG t = GetTickCount64();
@@ -702,96 +701,6 @@ public:
                 wsprintfW(sessBuf, L"Sesiones completadas hoy: %d", pomo.state.sessionsCompleted);
                 g.DrawString(sessBuf, -1, &fontSmall, RectF(colX, 164.0f, (float)width - colX - 20.0f, 20.0f), &leftMid, &textDim);
 
-            } else if (activeTab == TAB_TASKS) {
-                // Date heading + open count
-                SYSTEMTIME st;
-                GetLocalTime(&st);
-                wchar_t dateBuf[64];
-                wsprintfW(dateBuf, L"Hoy · %02d/%02d/%04d", st.wDay, st.wMonth, st.wYear);
-                g.DrawString(dateBuf, -1, &fontTitle, RectF(20.0f, 48.0f, 240.0f, 26.0f), &leftMid, &textWhite);
-                // Rows: the dated tasks first (r < D is events[dated[r]]), then todo.tasks[r - D]
-                const int todayKey = TodayKey();
-                const std::vector<size_t> dated = DatedTasks(events, todayKey);
-                const size_t D = dated.size(), N = D + todo.tasks.size();
-                todoTop = (std::min)(todoTop, N > TODO_ROWS ? N - TODO_ROWS : 0); // the list may have shrunk in the calendar
-                int open = 0;
-                for (const auto& t : todo.tasks) open += t.completed ? 0 : 1;
-                for (size_t i : dated) open += events.events[i].task == 1;
-                wchar_t openBuf[64];
-                if (N > TODO_ROWS) // scrolled with the mouse wheel
-                    wsprintfW(openBuf, L"%d pendientes · %d-%d de %d", open, (int)todoTop + 1,
-                              (int)(std::min)(todoTop + TODO_ROWS, N), (int)N);
-                else
-                    wsprintfW(openBuf, L"%d pendientes", open);
-                g.DrawString(openBuf, -1, &fontSmall, RectF(20.0f, 48.0f, (float)(width - 40), 26.0f), &rightMid, &textDim);
-
-                // Tasks list with round checkboxes; click the circle/text to toggle, the X to delete
-                Pen checkRing(Color(255, 70, 72, 78), 1.2f);
-                Font fontDone(&fontFamily, 9.0f, FontStyleStrikeout, UnitPoint);
-                float itemY = 82.0f;
-                if (N == 0)
-                    g.DrawString(L"Sin tareas. Escribe una abajo.", -1, &fontSmall, RectF(24.0f, itemY, (float)(width - 48), 24.0f), &leftMid, &textDim);
-                for (size_t r = todoTop; r < N && r < todoTop + TODO_ROWS; ++r) {
-                    const bool isDated = r < D; // a calendar task: its event's title and done state, no subtasks, no + button
-                    const TaskItem item = isDated ? TaskItem{ events.events[dated[r]].title, events.events[dated[r]].task == 2 } : todo.tasks[r - D];
-                    float in = item.sub ? 22.0f : 0.0f, textR = 44.0f; // subtasks indent; text stops before the buttons
-                    if (isDated) {
-                        const CalEvent& ev = events.events[dated[r]];
-                        std::wstring when = ev.date == todayKey ? L"Hoy" : ev.date == TmKey(KeyTm(todayKey, 1)) ? L"Mañana" : DayShort(ev.date);
-                        if (ev.minute >= 0) when += L" · " + EventTime(ev.minute);
-                        SolidBrush redText(Color(255, 239, 68, 68)), catBrush(Color(255, CAL_CATS[ev.color].r, CAL_CATS[ev.color].g, CAL_CATS[ev.color].b));
-                        g.DrawString(when.c_str(), -1, &fontSmall, RectF((float)(width - 172), itemY, 124.0f, 24.0f), &rightMid, // wide enough for "Mié 11 nov · 09:00"
-                                     ev.task == 1 && ev.date < todayKey ? &redText : &textDim); // open and past its day: overdue
-                        g.FillEllipse(&catBrush, width - 190.0f, itemY + 8.0f, 8.0f, 8.0f);
-                        textR = 204.0f;
-                    } else if (!item.sub) {
-                        g.DrawString(L"", -1, &iconSmall, RectF((float)(width - 68), itemY, 24.0f, 24.0f), &center, &textDim);
-                        textR = 68.0f;
-                        auto p = todo.SubProgress(r - D);
-                        if (p.second) {
-                            wchar_t prog[16];
-                            wsprintfW(prog, L"%d/%d", p.first, p.second);
-                            g.DrawString(prog, -1, &fontSmall, RectF((float)(width - 112), itemY, 40.0f, 24.0f), &rightMid, &textDim);
-                            textR = 112.0f;
-                        }
-                    }
-                    g.DrawString(L"", -1, &iconSmall, RectF((float)(width - 44), itemY, 24.0f, 24.0f), &center, &textDim);
-                    if (item.completed) {
-                        SolidBrush done(Color(255, 245, 245, 247));
-                        g.FillEllipse(&done, 24.0f + in, itemY + 5.0f, 14.0f, 14.0f);
-                        g.DrawString(L"", -1, &iconSmall, RectF(24.0f + in, itemY + 5.0f, 14.0f, 14.0f), &center, &ink);
-                    } else {
-                        g.DrawEllipse(&checkRing, 24.0f + in, itemY + 5.0f, 14.0f, 14.0f);
-                    }
-                    g.DrawString(item.text.c_str(), -1, item.completed ? &fontDone : &fontSmall, RectF(48.0f + in, itemY, width - 52.0f - in - textR, 24.0f), &leftMid, item.completed ? &textDim : &textWhite);
-                    itemY += 26.0f;
-                }
-
-                // Add-task field
-                GraphicsPath bAdd;
-                AddRoundRect(bAdd, 20.0f, 196.0f, (float)(width - 40), 30.0f, 8.0f);
-                g.FillPath(&surface, &bAdd);
-                Pen focusEdge(ACCENT, 1.0f);
-                g.DrawPath(editing ? &focusEdge : &surfaceEdge, &bAdd);
-                float fx = 32.0f;
-                if ((editing || !todoDraft.empty()) && todoParent < todo.tasks.size()) { // subtask: name its task first
-                    std::wstring label = L"↳ " + todo.tasks[todoParent].text + L":";
-                    RectF box;
-                    g.MeasureString(label.c_str(), -1, &fontSmall, PointF(0.0f, 0.0f), &box);
-                    float lw = (std::min)(box.Width, 150.0f);
-                    g.DrawString(label.c_str(), -1, &fontSmall, RectF(fx, 196.0f, lw, 30.0f), &leftMid, &textDim);
-                    fx += lw + 4.0f;
-                }
-                if (editing || !todoDraft.empty()) {
-                    // shortcut: only the tail of a long draft is shown so the caret stays visible; no cursor movement
-                    std::wstring shown = todoDraft.size() > 60 ? L"…" + todoDraft.substr(todoDraft.size() - 59) : todoDraft;
-                    if (editing) shown += L"|";
-                    g.DrawString(shown.c_str(), -1, &fontSmall, RectF(fx, 196.0f, width - 48.0f - fx, 30.0f), &leftMid, &textWhite);
-                } else {
-                    g.DrawString(L"Añadir tarea... (ej. Informe mañana 10:00)", -1, &fontSmall, RectF(fx, 196.0f, width - 48.0f - fx, 30.0f), &leftMid, &textDim);
-                }
-                g.DrawString(L"", -1, &iconSmall, RectF((float)(width - 48), 196.0f, 24.0f, 30.0f), &center, &textDim);
-
             } else if (activeTab == TAB_CALENDAR) {
                 // Left: mini-month, category filter, new-event button.
                 // Right: view switch, agenda / day / week / month around the selected day, and the selected event's strip.
@@ -915,29 +824,86 @@ public:
                 hit(714.0f, 47.0f, 24.0f, 24.0f, HIT_NEXT);
 
                 if (calView == CAL_AGENDA) {
-                    // The next 14 days from the selection; only days with events, the selected one always
-                    struct Row { int key, ev; }; // ev: -1 day header, -2 "Sin eventos", else the event
+                    // The selected day's events, then the task list (what the Tareas tab was), then the days with events of the
+                    // next 13. A task with a date is listed once, with the tasks, not under its day.
+                    struct Row { int key, ev; }; // ev: -1 day header, -2 "Sin eventos", -3 tasks header, -4 a task (key: its row in the task list), else the event
                     std::vector<Row> rows;
+                    const std::vector<size_t> dated = DatedTasks(events, todayKey); // the task list: these, then todo.tasks
+                    const int D = (int)dated.size(), T = D + (int)todo.tasks.size();
                     for (int d = 0; d < 14; ++d) {
                         int key = d ? TmKey(KeyTm(selKey, d)) : selKey;
-                        std::vector<size_t> vis = visible(key);
+                        std::vector<size_t> vis;
+                        for (size_t i : visible(key)) if (events.events[i].task == 0) vis.push_back(i);
                         if (vis.empty() && d) continue;
                         rows.push_back({ key, -1 });
                         if (vis.empty()) rows.push_back({ key, -2 });
                         for (size_t i : vis) rows.push_back({ key, (int)i });
+                        if (d == 0) {
+                            rows.push_back({ 0, -3 });
+                            calTaskRow = rows.size();
+                            for (int t = 0; t < T; ++t) rows.push_back({ t, -4 });
+                        }
                     }
                     calAgendaTop = (std::min)(calAgendaTop, rows.size() - 1);
+                    Pen checkRing(Color(255, 70, 72, 78), 1.2f);
+                    Font fontDone(&fontFamily, 9.0f, FontStyleStrikeout, UnitPoint);
                     float ry = 80.0f;
                     for (size_t r = calAgendaTop; r < rows.size(); ++r) {
                         const Row& row = rows[r];
-                        float rh = row.ev == -1 ? 20.0f : 22.0f;
-                        if (ry + rh + (row.ev == -1 ? 22.0f : 0.0f) > 346.0f) break; // no day header without its first row
+                        float rh = row.ev == -1 || row.ev == -3 ? 20.0f : 22.0f;
+                        if (ry + rh + (row.ev == -1 ? 22.0f : 0.0f) > 314.0f) break; // no day header without its first row; the task field sits below
                         if (row.ev == -1) {
                             std::wstring name = row.key == todayKey ? L"Hoy" : row.key == TmKey(KeyTm(todayKey, 1)) ? L"Mañana" : DayShort(row.key, true);
                             g.DrawString(name.c_str(), -1, &fontSmallBold, RectF(256.0f, ry, 470.0f, rh), &leftMid, row.key == todayKey ? &textWhite : &textDim);
                             hit(250.0f, ry, 490.0f, rh, HIT_DAY, row.key);
                         } else if (row.ev == -2) {
                             g.DrawString(L"Sin eventos", -1, &fontSmall, RectF(268.0f, ry, 300.0f, rh), &leftMid, &textDim);
+                        } else if (row.ev == -3) {
+                            int open = 0;
+                            for (const auto& t : todo.tasks) open += t.completed ? 0 : 1;
+                            for (size_t i : dated) open += events.events[i].task == 1;
+                            g.DrawString(L"Tareas", -1, &fontSmallBold, RectF(256.0f, ry, 200.0f, rh), &leftMid, &textWhite);
+                            g.DrawString((std::to_wstring(open) + (open == 1 ? L" pendiente" : L" pendientes")).c_str(), -1, &fontSmall,
+                                         RectF(540.0f, ry, 192.0f, rh), &rightMid, &textDim);
+                        } else if (row.ev == -4) {
+                            // A task: the circle (and a plain task's text) flips done and open, + starts a subtask, X deletes.
+                            // A dated task's text selects its event, so the strip below can move, edit or recolor it.
+                            const bool isDated = row.key < D;
+                            const int ei = isDated ? (int)dated[row.key] : -1;
+                            const TaskItem item = isDated ? TaskItem{ events.events[ei].title, events.events[ei].task == 2 } : todo.tasks[row.key - D];
+                            float in = item.sub ? 20.0f : 0.0f, textR = 708.0f; // subtasks indent; textR: where the text stops, before the row's buttons
+                            if (isDated && calEvent == ei) fillRound(&chipBg, 250.0f, ry, 490.0f, rh, 6.0f);
+                            if (isDated) {
+                                const CalEvent& ev = events.events[ei];
+                                std::wstring when = ev.date == todayKey ? L"Hoy" : ev.date == TmKey(KeyTm(todayKey, 1)) ? L"Mañana" : DayShort(ev.date);
+                                if (ev.minute >= 0) when += L" · " + EventTime(ev.minute);
+                                SolidBrush redText(Color(255, 239, 68, 68)), catBrush(catColor(ev.color));
+                                g.DrawString(when.c_str(), -1, &fontSmall, RectF(580.0f, ry, 128.0f, rh), &rightMid,
+                                             ev.task == 1 && ev.date < todayKey ? &redText : &textDim); // open and past its day: overdue
+                                g.FillEllipse(&catBrush, 566.0f, ry + 7.0f, 8.0f, 8.0f);
+                                textR = 560.0f;
+                            } else if (!item.sub) {
+                                g.DrawString(L"", -1, &iconSmall, RectF(688.0f, ry, 24.0f, rh), &center, &textDim);
+                                textR = 688.0f;
+                                auto p = todo.SubProgress(row.key - D);
+                                if (p.second) {
+                                    g.DrawString((std::to_wstring(p.first) + L"/" + std::to_wstring(p.second)).c_str(), -1, &fontSmall, RectF(644.0f, ry, 40.0f, rh), &rightMid, &textDim);
+                                    textR = 644.0f;
+                                }
+                            }
+                            g.DrawString(L"", -1, &iconSmall, RectF(712.0f, ry, 24.0f, rh), &center, &textDim);
+                            if (item.completed) {
+                                g.FillEllipse(&todayFill, 262.0f + in, ry + 4.0f, 14.0f, 14.0f);
+                                g.DrawString(L"", -1, &iconSmall, RectF(262.0f + in, ry + 4.0f, 14.0f, 14.0f), &center, &ink);
+                            } else {
+                                g.DrawEllipse(&checkRing, 262.0f + in, ry + 4.0f, 14.0f, 14.0f);
+                            }
+                            g.DrawString(item.text.c_str(), -1, item.completed ? &fontDone : &fontSmall, RectF(284.0f + in, ry, textR - 288.0f - in, rh), &leftMid,
+                                         item.completed ? &textDim : &textWhite);
+                            hit(250.0f, ry, textR - 250.0f, rh, isDated ? HIT_EVENT : HIT_T_TOGGLE, isDated ? ei : row.key);
+                            hit(250.0f, ry, 34.0f + in, rh, HIT_T_TOGGLE, row.key);
+                            if (!isDated && !item.sub) hit(688.0f, ry, 24.0f, rh, HIT_T_SUB, row.key);
+                            hit(712.0f, ry, 24.0f, rh, HIT_T_REMOVE, row.key);
                         } else {
                             const CalEvent& e = events.events[row.ev];
                             if (calEvent == row.ev) fillRound(&chipBg, 250.0f, ry, 490.0f, rh, 6.0f);
@@ -951,6 +917,33 @@ public:
                         }
                         ry += rh;
                     }
+
+                    // Add-task field under the list: a date or a time in the text makes it a calendar task
+                    const bool typing = editing && !calPop;
+                    GraphicsPath bAdd;
+                    AddRoundRect(bAdd, 250.0f, 319.0f, 490.0f, 26.0f, 8.0f);
+                    g.FillPath(&surface, &bAdd);
+                    g.DrawPath(typing ? &focusEdge : &surfaceEdge, &bAdd);
+                    float fx = 262.0f;
+                    if ((typing || !todoDraft.empty()) && todoParent < todo.tasks.size()) { // subtask: name its task first
+                        std::wstring label = L"↳ " + todo.tasks[todoParent].text + L":";
+                        RectF box;
+                        g.MeasureString(label.c_str(), -1, &fontSmall, PointF(0.0f, 0.0f), &box);
+                        float lw = (std::min)(box.Width, 150.0f);
+                        g.DrawString(label.c_str(), -1, &fontSmall, RectF(fx, 319.0f, lw, 26.0f), &leftMid, &textDim);
+                        fx += lw + 4.0f;
+                    }
+                    if (typing || !todoDraft.empty()) {
+                        // shortcut: only the tail of a long draft is shown so the caret stays visible; no cursor movement
+                        std::wstring shown = todoDraft.size() > 60 ? L"…" + todoDraft.substr(todoDraft.size() - 59) : todoDraft;
+                        if (typing) shown += L"|";
+                        g.DrawString(shown.c_str(), -1, &fontSmall, RectF(fx, 319.0f, 708.0f - fx, 26.0f), &leftMid, &textWhite);
+                    } else {
+                        g.DrawString(L"Añadir tarea... (ej. Informe mañana 10:00)", -1, &fontSmall, RectF(fx, 319.0f, 708.0f - fx, 26.0f), &leftMid, &textDim);
+                    }
+                    g.DrawString(L"", -1, &iconSmall, RectF(712.0f, 319.0f, 24.0f, 26.0f), &center, &textDim);
+                    hit(250.0f, 319.0f, 490.0f, 26.0f, HIT_T_FIELD);
+                    hit(712.0f, 319.0f, 24.0f, 26.0f, HIT_T_ADD);
                 } else if (calView == CAL_DAY || calView == CAL_WEEK) {
                     // 9 hour rows of 25 px from calHour; the day (or 7 columns) with timed events as blocks, all-day ones in a strip
                     const int n = calView == CAL_WEEK ? 7 : 1, HOURS = 9;

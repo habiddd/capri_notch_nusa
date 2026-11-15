@@ -590,18 +590,45 @@ public:
         if (!PtInRect(&zone, pt)) SetTucked(false);
     }
 
-    // Moves the task list by `rows` and keeps it in range (also after deletes). Rows: the dated tasks, then todo.tasks.
-    void ScrollTodo(int rows) {
-        size_t n = CapriUI::DatedTasks(events, CapriUI::TodayKey()).size() + todo.tasks.size(), maxTop = n > CapriUI::TODO_ROWS ? n - CapriUI::TODO_ROWS : 0;
-        long long top = (long long)ui.todoTop + rows;
-        ui.todoTop = (size_t)(std::max)(0LL, (std::min)((long long)maxTop, top));
+    // Scrolls the agenda just enough to bring row `task` of its task list (the dated tasks, then todo.tasks) into view
+    void ShowTask(size_t task) {
+        const size_t row = ui.calTaskRow + task, shown = 10; // rows of 22 px that fit between the header and the task field
+        if (row < ui.calAgendaTop) ui.calAgendaTop = row;
+        else if (row >= ui.calAgendaTop + shown) ui.calAgendaTop = row - shown + 1;
         UpdateDisplay();
     }
 
-    // Scrolls just enough to bring task-list row `row` into view
-    void ShowTodoRow(size_t row) {
-        long long top = (long long)ui.todoTop, a = (long long)row;
-        ScrollTodo((int)(a < top ? a - top : a >= top + (long long)CapriUI::TODO_ROWS ? a - top - (long long)CapriUI::TODO_ROWS + 1 : 0));
+    // A click on a row of the agenda's task list (rows as the paint lists them): the circle flips done and open,
+    // + starts a subtask of a top-level task, X deletes
+    void OnTaskHit(int kind, size_t idx) {
+        using C = CapriUI;
+        const std::vector<size_t> dated = C::DatedTasks(events, C::TodayKey());
+        const size_t D = dated.size();
+        if (idx >= D + todo.tasks.size()) return;
+        if (idx < D) { // a dated task lives in the events
+            const size_t ei = dated[idx];
+            ui.calEvent = -1; // the events move
+            ChangeEvents([&] {
+                if (kind == C::HIT_T_REMOVE) {
+                    events.Remove(ei);
+                } else {
+                    CalEvent t = events.events[ei];
+                    t.task = t.task == 2 ? 1 : 2;
+                    events.Update(ei, t);
+                }
+            });
+            return;
+        }
+        idx -= D;
+        if (kind == C::HIT_T_REMOVE) {
+            todo.Remove(idx);
+            ui.todoParent = SIZE_MAX; // indices shifted
+        } else if (kind == C::HIT_T_SUB) {
+            ui.todoParent = idx;
+            StartTyping();
+        } else {
+            todo.Toggle(idx);
+        }
     }
 
     void CommitTodo() {
@@ -622,11 +649,11 @@ public:
             size_t at = SIZE_MAX;
             ChangeEvents([&] { at = events.Add(p); });
             std::vector<size_t> dated = CapriUI::DatedTasks(events, today); // its row, after the others are found again
-            return ShowTodoRow(std::find(dated.begin(), dated.end(), at) - dated.begin());
+            return ShowTask(std::find(dated.begin(), dated.end(), at) - dated.begin());
         }
         size_t at = todo.Add(t, ui.todoParent); // ignores empty text; the parent stays set for the next subtask
         if (at == SIZE_MAX) return UpdateDisplay();
-        ShowTodoRow(CapriUI::DatedTasks(events, today).size() + at); // plain tasks come after the dated ones
+        ShowTask(CapriUI::DatedTasks(events, today).size() + at); // plain tasks come after the dated ones
     }
 
     // Saves the event window's draft (or rewrites the event it was opened on) and jumps to its day; a blank title does nothing
@@ -646,10 +673,9 @@ public:
         UpdateTargetDimensions();
     }
 
-    // Typing into the open tab's field: a task, or the focused field of the event window
+    // Typing into the calendar: the focused field of the event window, else the agenda's task field
     void OnChar(wchar_t ch) {
-        bool cal = activeTab == TAB_CALENDAR;
-        if (cal && !ui.calPop) return;
+        bool cal = ui.calPop;
         std::wstring& d = cal ? (ui.popFocus ? ui.popEv.notes : ui.popEv.title) : ui.todoDraft;
         if (ch == L'\r') {
             if (!cal) return CommitTodo();
@@ -768,6 +794,13 @@ public:
             int day = ui.SelKey(), start = day == CapriUI::TodayKey() ? (std::min)(23, st.wHour + 1) * 60 : 540;
             return OpenPopup({ day, start, start + 60, 0, 0, L"" }, -1);
         }
+        case C::HIT_T_TOGGLE: case C::HIT_T_REMOVE: case C::HIT_T_SUB: return OnTaskHit(h.kind, h.a);
+        case C::HIT_T_ADD: // the + adds what was typed and keeps typing
+            if (!ui.todoDraft.empty()) CommitTodo();
+            [[fallthrough]];
+        case C::HIT_T_FIELD: // a normal task, unless a subtask is already being typed
+            if (!ui.editing) ui.todoParent = SIZE_MAX;
+            return StartTyping();
         }
 
         // Detail strip actions on the selected event
@@ -1109,48 +1142,6 @@ public:
                 else if (x >= 266 && x <= 310) pomo.Reset();
                 UpdateDisplay();
             }
-        } else if (activeTab == TAB_TASKS) {
-            // Task rows (y from 82, step 26): X deletes, + (top-level only) starts a subtask, anywhere else toggles
-            if (y >= 82 && y < 82 + (int)CapriUI::TODO_ROWS * 26) {
-                const std::vector<size_t> dated = CapriUI::DatedTasks(events, CapriUI::TodayKey()); // as the list draws them
-                size_t idx = ui.todoTop + (y - 82) / 26, D = dated.size();
-                if (idx >= D + todo.tasks.size()) return;
-                if (idx < D) { // a dated task: X removes its event, the rest of the row flips done and open
-                    const size_t ei = dated[idx];
-                    ChangeEvents([&] {
-                        if (x >= w - 44) {
-                            events.Remove(ei);
-                        } else {
-                            CalEvent t = events.events[ei];
-                            t.task = t.task == 2 ? 1 : 2;
-                            events.Update(ei, t);
-                        }
-                    });
-                } else {
-                    idx -= D;
-                    if (x >= w - 44) {
-                        todo.Remove(idx);
-                        ui.todoParent = SIZE_MAX; // indices shifted
-                    } else if (x >= w - 68 && !todo.tasks[idx].sub) {
-                        ui.todoParent = idx;
-                        ui.editing = true;
-                        SetForegroundWindow(hWnd);
-                        SetFocus(hWnd);
-                    } else {
-                        todo.Toggle(idx);
-                    }
-                }
-                ScrollTodo(0);
-            } else if (y >= 196 && y <= 226 && x >= 20 && x <= w - 20) {
-                // Add field: the + adds what was typed, the rest of the field starts typing (a normal task unless
-                // a subtask is already being typed)
-                if (x >= w - 48 && !ui.todoDraft.empty()) CommitTodo();
-                if (!ui.editing) ui.todoParent = SIZE_MAX;
-                ui.editing = true;
-                SetForegroundWindow(hWnd);
-                SetFocus(hWnd);
-                UpdateDisplay();
-            }
         } else if (activeTab == TAB_CALENDAR) {
             // The top-most area the last paint registered under the pointer wins
             for (auto it = ui.calHits.rbegin(); it != ui.calHits.rend(); ++it)
@@ -1306,7 +1297,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
 
     case WM_MOUSEWHEEL:
-        if (g_App.expanded && g_App.activeTab == TAB_TASKS) g_App.ScrollTodo(GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1);
         if (g_App.expanded && g_App.activeTab == TAB_CALENDAR && !g_App.ui.calPop) {
             g_App.ui.CalWheel(GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1);
             g_App.UpdateDisplay();

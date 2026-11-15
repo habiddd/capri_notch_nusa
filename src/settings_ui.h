@@ -28,7 +28,7 @@ public:
     enum Section { SEC_GENERAL, SEC_PILL, SEC_MUSIC, SEC_POMODORO, SEC_CALENDAR, SEC_ACCOUNTS, SEC_WEATHER, SEC_SYSTEM, SEC_PERF, SEC_AI, SEC_ABOUT, SEC_COUNT };
 
     // The tab gear opens the section of its tab
-    static int SectionOfTab(int tab) { static const int s[] = { SEC_MUSIC, SEC_POMODORO, SEC_GENERAL, SEC_CALENDAR, SEC_AI, SEC_WEATHER, SEC_SYSTEM, SEC_GENERAL }; return s[tab]; }
+    static int SectionOfTab(int tab) { static const int s[] = { SEC_MUSIC, SEC_POMODORO, SEC_CALENDAR, SEC_AI, SEC_WEATHER, SEC_SYSTEM, SEC_GENERAL }; return s[tab]; }
 
     static void Open(HWND notch, int section, SyncAccount* google, SyncAccount* outlook, SyncAccount* ics, const SettingsHooks& h) {
         notchWnd = notch;

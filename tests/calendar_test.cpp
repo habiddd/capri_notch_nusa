@@ -120,7 +120,7 @@ int main() {
     assert(AlertDue(multi, 930, &lead) == 2 && lead == 0);
     assert(AlertDue(multi, 900) == 0);
 
-    // Which tasks the Tareas tab lists: open ones always, done ones from their day on; events never; deleted ones never
+    // Which tasks the agenda's task list shows: open ones always, done ones from their day on; events never; deleted ones never
     CalEvent open{ 20261101, -1, -1, 0, 0, L"x" }, done = open, doneToday = open, plain = open, gone = open;
     open.task = 1;
     done.task = 2;

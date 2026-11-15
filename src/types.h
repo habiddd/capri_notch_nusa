@@ -45,12 +45,11 @@ inline bool ReadUtf8File(const std::wstring& path, std::wstring& text) {
 enum NotchTab {
     TAB_MEDIA = 0,
     TAB_POMODORO = 1,
-    TAB_TASKS = 2,
-    TAB_CALENDAR = 3,
-    TAB_AI = 4,
-    TAB_WEATHER = 5,
-    TAB_SYSTEM = 6,
-    TAB_SHELF = 7,
+    TAB_CALENDAR = 2, // its agenda holds the task list
+    TAB_AI = 3,
+    TAB_WEATHER = 4,
+    TAB_SYSTEM = 5,
+    TAB_SHELF = 6,
     TAB_COUNT
 };
 

@@ -207,7 +207,7 @@ inline int AlertDue(const CalEvent& e, int nowMinute, int* lead = nullptr) {
     return 0;
 }
 
-// The Tasks tab's rule: an open task always shows; a done one only on its day or later
+// The task list's rule: an open task always shows; a done one only on its day or later
 inline bool TaskListed(const CalEvent& e, int today) {
     return e.task != 0 && !(e.dirty & 4) && (e.task == 1 || e.date >= today);
 }
