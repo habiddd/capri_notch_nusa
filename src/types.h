@@ -50,6 +50,7 @@ enum NotchTab {
     TAB_AI = 4,
     TAB_WEATHER = 5,
     TAB_SYSTEM = 6,
+    TAB_SHELF = 7,
     TAB_COUNT
 };
 

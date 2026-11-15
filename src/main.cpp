@@ -5,11 +5,13 @@
 #include <gdiplus.h>
 #include <cstdio>
 #include <objbase.h>
+#include <ole2.h>
 #include <locationapi.h>
 #include "types.h"
 #include "tabs.h"
 #include "pomodoro.h"
 #include "todo.h"
+#include "shelf.h"
 #include "events.h"
 #include "media.h"
 #include "ai_client.h"
@@ -117,6 +119,7 @@ public:
     CapriUI ui;
     PomodoroManager pomo;
     TodoManager todo;
+    ShelfManager shelf;
     EventManager events;
     MediaManager media;
     AICompanion ai;
@@ -215,6 +218,7 @@ public:
         SetTimer(hWnd, TIMER_SECOND, 1000, NULL);  // 1s logic tick
         LoadSettings(SettingsIniPath(), g_settings);
         g_settings.startWithWindows = RunAtLogin(); // the Run key is the truth, not the ini
+        if (g_settings.startWithWindows) SetRunAtLogin(true); // the exe may have moved: point the entry at this copy
         std::string key;
         if (UnprotectFromFile(AppDataFile(L"capri_ai_key.bin"), key)) ai.SetKey(Wide(key));
         ui.calView = (CapriUI::CalView)g_settings.calDefaultView;
@@ -398,6 +402,7 @@ public:
         if (expanded == exp) return;
         expanded = exp;
         if (!exp) {
+            ui.ShelfThumbsFree(); // thumbnails live only while the shelf is on screen
             ui.editing = false; // the event window, if open, stays with its draft
             ui.calSel = 0; // the calendar reopens on today (in the view it was left on)
             ui.calEvent = -1;
@@ -421,7 +426,7 @@ public:
         ui.linkGoogle = ics.account.find(L"google") != std::wstring::npos; // the link's host decides its agenda mark, G or O
 
         // Render UI with correct scanline stride
-        ui.Render(pvBits, stride, pw, ph, scale, expanded, activeTab, pomo, todo, events, media, ai, wakeEngine);
+        ui.Render(pvBits, stride, pw, ph, scale, expanded, activeTab, pomo, todo, events, media, ai, wakeEngine, shelf);
         if (!expanded && targetWidth != ui.pillWidth + 2 * NOTCH_SHOULDER) UpdateTargetDimensions(); // new text: the animation tick resizes
 
         int posX = monitorLeft + (monitorWidth - pw) / 2;
@@ -786,13 +791,55 @@ public:
         ui.calEvent = (int)events.Update(ui.calEvent, e);
     }
 
-    // A click on a weather control (see CapriUI::tabHits)
+    // A click on a weather or shelf control (see CapriUI::tabHits)
     void OnTabHit(const CapriUI::CalHit& h) {
         using C = CapriUI;
         switch (h.kind) {
         case C::HIT_W_RETRY: return FetchWeather(true);
         case C::HIT_W_SETUP: return OpenSettings(SettingsWindow::SEC_WEATHER);
+        case C::HIT_S_MODE:
+            ui.shelfSend = !ui.shelfSend;
+            ui.shelfNote.clear();
+            ui.ShelfThumbsFree();
+            return;
+        case C::HIT_S_REMOVE: return shelf.Remove(h.a);
+        case C::HIT_S_ITEM:
+            if ((size_t)h.a < shelf.files.size()) ShellExecuteW(NULL, L"open", shelf.files[h.a].c_str(), NULL, NULL, SW_SHOWNORMAL);
+            return;
         }
+    }
+
+    // A file is being dragged over the notch, or was just dropped: open on Archivos so the drop has somewhere to land
+    void OnDragNear() {
+        KillTimer(hWnd, TIMER_LEAVE);
+        SetTucked(false);
+        ui.TabChanged(activeTab, TAB_SHELF);
+        activeTab = TAB_SHELF;
+        ui.editing = false;
+        SetExpanded(true);
+        UpdateTargetDimensions();
+        UpdateDisplay();
+    }
+
+    // Files dropped on the notch: copied to the shelf, or handed to Quick Share in send mode. The caller owns `drop`.
+    // shortcut: only real files (CF_HDROP: Explorer, the desktop); an image dragged straight out of a browser is refused. Upgrade to CFSTR_FILECONTENTS for those.
+    void OnDrop(HDROP drop) {
+        std::vector<std::wstring> paths;
+        UINT n = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
+        for (UINT i = 0; i < n; ++i) {
+            std::wstring p(DragQueryFileW(drop, i, NULL, 0), L'\0');
+            DragQueryFileW(drop, i, p.data(), (UINT)p.size() + 1);
+            paths.push_back(p);
+        }
+        if (paths.empty()) return;
+        if (ui.shelfSend) {
+            ui.shelfNote = L"Abriendo Quick Share…";
+            ShelfSend(hWnd, paths);
+        } else {
+            ui.shelfNote = L"Copiando…";
+            ShelfCopyAsync(hWnd, paths, shelf.dir); // WM_SHELF_COPIED adds the copies
+        }
+        OnDragNear();
     }
 
     // Open-Meteo, asked for only while the Clima tab is open: a forecast at most every 15 min, or at once when forced (retry).
@@ -1134,6 +1181,47 @@ public:
 
 static CapriNotchApp g_App;
 
+// OLE drop target of the notch: a file dragged over it opens it on Archivos before the drop (WM_DROPFILES has no "entered" event).
+// One static instance, so the reference count is not kept.
+struct NotchDropTarget : IDropTarget {
+    bool files = false; // the drag in progress carries files
+    static FORMATETC Hdrop() { return { CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL }; }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (iid == IID_IUnknown || iid == IID_IDropTarget) { *out = this; return S_OK; }
+        *out = NULL;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD, POINTL, DWORD* effect) override {
+        FORMATETC fmt = Hdrop();
+        files = data && data->QueryGetData(&fmt) == S_OK;
+        if (files) g_App.OnDragNear();
+        *effect = files ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) override {
+        *effect = files ? DROPEFFECT_COPY : DROPEFFECT_NONE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DragLeave() override {
+        if (files) SetTimer(g_App.hWnd, TIMER_LEAVE, g_settings.leaveDelay, NULL); // left without dropping: close like a pointer that left
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD, POINTL, DWORD* effect) override {
+        FORMATETC fmt = Hdrop();
+        STGMEDIUM med = {};
+        *effect = DROPEFFECT_NONE;
+        if (files && data && SUCCEEDED(data->GetData(&fmt, &med))) {
+            g_App.OnDrop((HDROP)med.hGlobal);
+            ReleaseStgMedium(&med);
+            *effect = DROPEFFECT_COPY;
+        }
+        return S_OK;
+    }
+};
+static NotchDropTarget g_dropTarget;
+
 // Sees every left click on the desktop so a click beside the notch can tuck it. It only forwards the point;
 // the decision runs on the UI thread. Never blocks or swallows the click.
 static LRESULT CALLBACK NearClickHook(int code, WPARAM wParam, LPARAM lParam) {
@@ -1223,6 +1311,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             g_App.ui.CalWheel(GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1);
             g_App.UpdateDisplay();
         }
+        if (g_App.expanded && g_App.activeTab == TAB_SHELF) {
+            if (GET_WHEEL_DELTA_WPARAM(wParam) > 0) { if (g_App.ui.shelfTop) --g_App.ui.shelfTop; } else ++g_App.ui.shelfTop; // the paint clamps the end
+            g_App.UpdateDisplay();
+        }
         break;
 
     case WM_ACTIVATE: // clicked away while typing: stop, and close if the pointer is gone too
@@ -1271,6 +1363,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
     }
 
+    case WM_SHELF_COPIED: {
+        std::unique_ptr<std::vector<std::wstring>> made((std::vector<std::wstring>*)lParam);
+        for (auto it = made->rbegin(); it != made->rend(); ++it) g_App.shelf.Add(*it); // the first one dropped ends on top
+        g_App.ui.shelfTop = 0;
+        g_App.ui.shelfNote = wParam ? L"No se pudo copiar " + std::to_wstring(wParam) + L" (las carpetas no se guardan)" : L"";
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); // the copy is over: hand its pages back
+        g_App.UpdateDisplay();
+        break;
+    }
+
+    case WM_SHELF_SENT:
+        g_App.ui.shelfNote = wParam ? L"Elige tu móvil en la ventana de Quick Share" : L"Quick Share no respondió. ¿Está instalado?";
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); // the send is over: hand its pages back
+        g_App.UpdateDisplay();
+        break;
+
     case WM_SETTINGS_CHANGED:
         g_App.ApplySettings();
         break;
@@ -1290,6 +1398,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
 
     case WM_DESTROY:
+        RevokeDragDrop(hWnd);
         g_App.RemoveTray();
         PostQuitMessage(0);
         break;
@@ -1309,8 +1418,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     FILE* dbg = fopen("C:\\capri_debug.txt", "w");
     if (dbg) { fprintf(dbg, "START\n"); fflush(dbg); }
 
-    // WinRT init for GSMTC media detection
-    HRESULT roHr = RoInitialize(RO_INIT_MULTITHREADED);
+    // OLE (an STA) for the notch's drop target; the WinRT media detection runs in it too
+    HRESULT roHr = OleInitialize(NULL);
     if (dbg) { fprintf(dbg, "RoInit: 0x%08X\n", (unsigned)roHr); fflush(dbg); }
     if (FAILED(roHr)) {
         // Non-fatal: media detection won't work but app should still run
@@ -1380,6 +1489,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
     if (dbg) { fprintf(dbg, "CreateWindow OK hwnd=%p\n", (void*)hWnd); fflush(dbg); }
+    RegisterDragDrop(hWnd, &g_dropTarget);
 
     // Low-level hooks run on the installing thread's message loop; a thread of its own keeps system-wide mouse
     // input from waiting on the UI thread, which can block briefly on media calls.
@@ -1404,6 +1514,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     if (hMutex) CloseHandle(hMutex);
     Gdiplus::GdiplusShutdown(gdiplusToken);
-    RoUninitialize();
+    OleUninitialize();
     return (int)msg.wParam;
 }

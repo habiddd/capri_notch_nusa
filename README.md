@@ -49,6 +49,11 @@ Aplicación ultraligera de Dynamic Notch / Dynamic Island para Windows 11 escrit
    - **Clima**: temperatura, sensación térmica, humedad, viento y máxima/mínima de hoy para tu ubicación: la de Windows si la tienes activada; si no, una aproximada por tu IP ([ipwho.is](https://ipwho.is)), o la ciudad que escribas en Configuración → Clima. Usa la API abierta [Open-Meteo](https://open-meteo.com), sin clave: la ciudad que escribes se envía a su buscador de ubicaciones, y a Open-Meteo van las coordenadas. Con la ubicación automática y la de Windows desactivada, [ipwho.is](https://ipwho.is) ve tu IP. Todo ello solo mientras la pestaña Clima está abierta, como mucho cada 15 minutos.
    - **Sistema**: uso de CPU (con su gráfica del último minuto y su temperatura), temperatura de la GPU, memoria, espacio libre en C:, batería y los vatios que entran o salen de ella. Solo se mide mientras la pestaña Sistema está abierta.
 
+8. **Archivos (estante y envío al móvil)**:
+   - Arrastra archivos desde el Explorador o el escritorio sobre el notch: se abre solo en la pestaña **Archivos** antes de soltar. Si te vas sin soltar, se cierra.
+   - El botón **Modo** cambia entre dos vistas. *Guardar*: lo que sueltas se **copia** a `%LOCALAPPDATA%\CapriNotch\shelf\` y el original no se toca (las carpetas no se guardan); un clic abre la copia y la X la manda a la Papelera. *Enviar*: no muestra el estante, solo una zona donde soltar; lo que sueltas se manda a tu móvil con [Quick Share](https://www.android.com/better-together/quick-share-app/) de Google (debe estar instalado) y no se guarda. La transferencia la hace Quick Share en su propio proceso.
+   - En *guardar* los archivos se ven como una cuadrícula de miniaturas sin nombre (hasta 4, grandes en una fila; con más, pequeñas en dos filas) o como una lista de nombres (Configuración → General → **Archivos: miniaturas**). Las miniaturas se cargan al pintar y se liberan al cerrar el notch o salir de la pestaña. La rueda del ratón desplaza la lista.
+
 ---
 
 ## 🛠️ Instalación y Compilación
@@ -128,7 +133,7 @@ Se abre de tres formas: con el icono de la bandeja (clic), con clic derecho sobr
 
 El menú del icono de la bandeja tiene **Configuración**, **Ocultar notch** / **Mostrar notch**, **Mover al otro monitor** y **Salir de Capri Notch**.
 
-- **General**: iniciar con Windows (usuario actual), abrir al pasar el ratón, retraso al abrir y al cerrar, esconder al hacer clic al lado, ocultar en pantalla completa (desactivado por defecto), mover al otro monitor.
+- **General**: iniciar con Windows (usuario actual), abrir al pasar el ratón, retraso al abrir y al cerrar, esconder al hacer clic al lado, ocultar en pantalla completa (desactivado por defecto), miniaturas de la pestaña Archivos, mover al otro monitor.
 - **Píldora**: dormir tras N minutos sin uso, aviso del cargador y letra en la píldora.
 - **Música**: la misma opción de letra y un recordatorio de que las letras son de LRCLIB.
 - **Pomodoro**: duración de enfoque (5 a 90 min) y descanso (1 a 30 min), y sonido al terminar. Con el temporizador parado, el cambio se aplica ya; en marcha, a partir del siguiente ciclo.

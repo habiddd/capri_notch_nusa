@@ -25,7 +25,7 @@ int main() {
     assert(s.focusMin == 25 && s.breakMin == 5 && s.pomoSound && s.calDefaultView == 0 && s.defaultAlert == 10);
     assert(s.defaultCategory == 0 && s.reminderSound && s.syncMinutes == 5);
     assert(s.aiProvider == 0 && s.aiHost.empty() && s.aiPath == L"/v1/chat/completions" && s.aiModel.empty() && s.aiPort == 443 && s.aiHttps);
-    assert(s.sysTemps && s.sysPower && s.weatherAuto && s.weatherCityName.empty());
+    assert(s.sysTemps && s.sysPower && s.weatherAuto && s.weatherCityName.empty() && s.shelfThumbs);
 
     // Round trip of every field, with an accent in a text field
     Settings w;
@@ -35,7 +35,7 @@ int main() {
     w.calDefaultView = 2; w.defaultAlert = 30; w.defaultMoreAlerts = 9; w.defaultCategory = 4; w.reminderSound = false; w.syncMinutes = 15;
     w.tasksInCalendar = false;
     w.aiProvider = 3; w.aiHost = L"ia.ejemplo.es"; w.aiPath = L"/api/chat"; w.aiModel = L"modelo ñandú"; w.aiPort = 8443; w.aiHttps = false;
-    w.sysTemps = false; w.sysPower = false; w.weatherAuto = false; w.weatherCityName = L"Bogotá";
+    w.sysTemps = false; w.sysPower = false; w.weatherAuto = false; w.weatherCityName = L"Bogotá"; w.shelfThumbs = false;
     assert(SaveSettings(ini, w));
     Settings r;
     assert(LoadSettings(ini, r));
@@ -46,7 +46,7 @@ int main() {
     assert(!r.tasksInCalendar);
     assert(r.aiProvider == 3 && r.aiHost == L"ia.ejemplo.es" && r.aiPath == L"/api/chat" && r.aiModel == L"modelo ñandú");
     assert(r.aiPort == 8443 && !r.aiHttps);
-    assert(!r.sysTemps && !r.sysPower && !r.weatherAuto && r.weatherCityName == L"Bogotá");
+    assert(!r.sysTemps && !r.sysPower && !r.weatherAuto && r.weatherCityName == L"Bogotá" && !r.shelfThumbs);
     {   // every collapsed-view switch survives a save and load when flipped from its default
         Settings d, f, back;
         for (auto& p : PillFlags(f)) *p.second = !*p.second;

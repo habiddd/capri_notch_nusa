@@ -28,7 +28,7 @@ public:
     enum Section { SEC_GENERAL, SEC_PILL, SEC_MUSIC, SEC_POMODORO, SEC_CALENDAR, SEC_ACCOUNTS, SEC_WEATHER, SEC_SYSTEM, SEC_PERF, SEC_AI, SEC_ABOUT, SEC_COUNT };
 
     // The tab gear opens the section of its tab
-    static int SectionOfTab(int tab) { static const int s[] = { SEC_MUSIC, SEC_POMODORO, SEC_GENERAL, SEC_CALENDAR, SEC_AI, SEC_WEATHER, SEC_SYSTEM }; return s[tab]; }
+    static int SectionOfTab(int tab) { static const int s[] = { SEC_MUSIC, SEC_POMODORO, SEC_GENERAL, SEC_CALENDAR, SEC_AI, SEC_WEATHER, SEC_SYSTEM, SEC_GENERAL }; return s[tab]; }
 
     static void Open(HWND notch, int section, SyncAccount* google, SyncAccount* outlook, SyncAccount* ics, const SettingsHooks& h) {
         notchWnd = notch;
@@ -131,7 +131,7 @@ private:
               ID_SYNC_MIN, ID_AI_PROVIDER, ID_AI_HTTPS, ID_WEATHER_AUTO, ID_SYS_TEMPS, ID_SYS_POWER, ID_TASKS_CAL,
               ID_PILL_ART, ID_PILL_ARTIST, ID_PILL_POMO_IDLE, ID_PILL_POMO_BAR, ID_PILL_POMO_SESSIONS, ID_PILL_SYS, ID_PILL_SYS_CPU,
               ID_PILL_SYS_GPU, ID_PILL_SYS_RAM, ID_PILL_SYS_DISK, ID_PILL_SYS_POWER, // the ID_PILL_ block follows PillFlags' order
-              ID_PERF_ANIM, ID_PERF_GLOW, ID_PERF_SAVER, ID_PERF_FPS, ID_PERF_SENSOR };
+              ID_PERF_ANIM, ID_PERF_GLOW, ID_PERF_SAVER, ID_PERF_FPS, ID_PERF_SENSOR, ID_SHELF_THUMBS };
     enum Field { F_HOST, F_PATH, F_MODEL, F_PORT, F_KEY, F_G_URL, F_MS_ID, F_ICS, F_WCITY };
     enum BtnId { B_MONITOR, B_CLEAR_KEY, B_DATA, B_QUIT, B_GUIDE, B_COPY_SCRIPT, B_ACC_CONNECT, B_ACC_DISCONNECT, B_ACC_SYNC };
     enum HitKind { HK_SECTION, HK_BOOL, HK_STEP, HK_CHIP, HK_FIELD, HK_BUTTON };
@@ -243,6 +243,7 @@ private:
         case ID_REMIND_SOUND: return &s.reminderSound;
         case ID_WEATHER_AUTO: return &s.weatherAuto;
         case ID_SYS_TEMPS: return &s.sysTemps;
+        case ID_SHELF_THUMBS: return &s.shelfThumbs;
         case ID_SYS_POWER: return &s.sysPower;
         case ID_TASKS_CAL: return &s.tasksInCalendar;
         case ID_PERF_ANIM: return &s.perfAnimations;
@@ -674,6 +675,7 @@ private:
             row(L"Esconder al hacer clic al lado", L"Un clic junto a la píldora la recoge"); toggle(ID_TUCK); next();
             row(L"Ocultar en pantalla completa", L"Se oculta con juegos, vídeos y presentaciones"); toggle(ID_FULLSCREEN); next();
             row(L"Monitor", L"Muestra la píldora en la siguiente pantalla"); button(CR - 170.0f, B_MONITOR, 0, 170.0f, L"Mover al otro monitor"); next();
+            row(L"Archivos: miniaturas", L"Vista previa junto al nombre en el modo guardar"); toggle(ID_SHELF_THUMBS); next();
             break;
         case SEC_PILL:
             row(L"Dormir tras", L"Cierra los ojos tras estos minutos sin usar el equipo"); stepper(ID_SLEEP); next();

@@ -36,6 +36,7 @@ struct Settings {
     bool aiHttps = true;
     // Sistema: CPU and GPU temperatures, and battery watts, when Windows offers them
     bool sysTemps = true, sysPower = true;
+    bool shelfThumbs = true; // Archivos, save mode: a thumbnail beside each name
     // What each tab's collapsed view shows (the pill only ever grows sideways)
     bool pillArt = true, pillArtist = false;                               // music: cover, "title · artist"
     bool pillPomoIdle = true, pillPomoBar = true, pillPomoSessions = false; // pomodoro: shown while stopped, progress line, session count
@@ -135,6 +136,7 @@ inline bool LoadSettings(const std::wstring& path, Settings& s) {
     flag(L"aiHttps", s.aiHttps);
     flag(L"sysTemps", s.sysTemps);
     flag(L"sysPower", s.sysPower);
+    flag(L"shelfThumbs", s.shelfThumbs);
     for (auto& f : PillFlags(s)) flag(f.first, *f.second);
     flag(L"weatherAuto", s.weatherAuto);
     str(L"weatherCityName", s.weatherCityName);
@@ -179,6 +181,7 @@ inline bool SaveSettings(const std::wstring& path, const Settings& s) {
     line(L"aiHttps", flag(s.aiHttps));
     line(L"sysTemps", flag(s.sysTemps));
     line(L"sysPower", flag(s.sysPower));
+    line(L"shelfThumbs", flag(s.shelfThumbs));
     for (auto& f : PillFlags(const_cast<Settings&>(s))) line(f.first, flag(*f.second));
     line(L"weatherAuto", flag(s.weatherAuto));
     line(L"weatherCityName", s.weatherCityName);
@@ -198,14 +201,16 @@ inline std::wstring RunCommandLine() {
 }
 
 inline constexpr const wchar_t* RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+inline constexpr const wchar_t* RUN_APPROVED_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
 inline constexpr const wchar_t* RUN_VALUE = L"CapriNotch";
 
 inline bool RunAtLogin() {
-    HKEY k;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_QUERY_VALUE, &k) != ERROR_SUCCESS) return false;
-    bool has = RegQueryValueExW(k, RUN_VALUE, NULL, NULL, NULL, NULL) == ERROR_SUCCESS;
-    RegCloseKey(k);
-    return has;
+    if (RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, RRF_RT_REG_SZ, NULL, NULL, NULL) != ERROR_SUCCESS) return false;
+    // Disabling the app in Task Manager keeps the Run value and sets an odd first byte here
+    BYTE approved[12] = {};
+    DWORD n = sizeof(approved);
+    bool disabled = RegGetValueW(HKEY_CURRENT_USER, RUN_APPROVED_KEY, RUN_VALUE, RRF_RT_REG_BINARY, NULL, approved, &n) == ERROR_SUCCESS && (approved[0] & 1);
+    return !disabled;
 }
 
 inline void SetRunAtLogin(bool on) {
@@ -214,6 +219,7 @@ inline void SetRunAtLogin(bool on) {
     if (on) {
         std::wstring cmd = RunCommandLine();
         RegSetValueExW(k, RUN_VALUE, 0, REG_SZ, (const BYTE*)cmd.c_str(), (DWORD)((cmd.size() + 1) * sizeof(wchar_t)));
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_APPROVED_KEY, RUN_VALUE); // turning it on here undoes a Task Manager "disabled"
     } else {
         RegDeleteValueW(k, RUN_VALUE);
     }

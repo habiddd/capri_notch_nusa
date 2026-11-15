@@ -8,6 +8,7 @@
 #include "media.h"
 #include "ai_client.h"
 #include "tabs.h"
+#include "shelf.h"
 #include <cmath>
 #include <ctime>
 
@@ -55,6 +56,33 @@ public:
     std::wstring todoDraft;
     size_t todoParent = SIZE_MAX; // task the field adds a subtask to; SIZE_MAX adds a normal task
     static constexpr size_t TODO_ROWS = 4;
+    // Archivos: first visible row, whether a drop or a click sends (true) or keeps/opens (false), and the footer note of the last send
+    size_t shelfTop = 0;
+    bool shelfSend = false;
+    std::wstring shelfNote;
+    // Thumbnails of the tiles painted so far (NULL = none to show), all at shelfThumbPx. Loaded on first paint, all freed
+    // when the notch closes, the shelf is left or the tiles change size.
+    std::vector<std::pair<std::wstring, HBITMAP>> shelfThumbCache;
+    int shelfThumbPx = 0;
+    // shortcut: read on the UI thread; Windows serves it from its thumbnail cache, but a huge new image can stall one frame. Upgrade to a worker thread if that shows.
+    HBITMAP ShelfThumb(const std::wstring& path, int px) {
+        if (px != shelfThumbPx) ShelfThumbsFree();
+        shelfThumbPx = px;
+        for (auto& t : shelfThumbCache) if (t.first == path) return t.second;
+        HBITMAP bmp = NULL;
+        IShellItemImageFactory* f = NULL;
+        if (SUCCEEDED(SHCreateItemFromParsingName(path.c_str(), NULL, IID_IShellItemImageFactory, (void**)&f))) {
+            f->GetImage({ px, px }, SIIGBF_RESIZETOFIT, &bmp);
+            f->Release();
+        }
+        shelfThumbCache.push_back({ path, bmp }); // a failure is kept too, so it is not retried on every frame
+        return bmp;
+    }
+    void ShelfThumbsFree() {
+        for (auto& t : shelfThumbCache) if (t.second) DeleteObject(t.second);
+        shelfThumbCache.clear();
+        shelfThumbCache.shrink_to_fit();
+    }
 
     // Calendar: view, selected day (YYYYMMDD, 0 = today) that every view is built around
     enum CalView { CAL_AGENDA, CAL_DAY, CAL_WEEK, CAL_MONTH };
@@ -83,7 +111,7 @@ public:
     struct CalHit { Gdiplus::RectF r; int kind, a, b; };
     std::vector<CalHit> calHits;
     std::vector<CalHit> tabHits; // clickable areas of the clock and weather tabs (rebuilt on every expanded paint)
-    enum { HIT_W_RETRY, HIT_W_SETUP }; // kinds in tabHits
+    enum { HIT_W_RETRY, HIT_W_SETUP, HIT_S_MODE, HIT_S_ITEM, HIT_S_REMOVE }; // kinds in tabHits
     static constexpr const wchar_t* DAY_NAMES[] = { L"Domingo", L"Lunes", L"Martes", L"Miércoles", L"Jueves", L"Viernes", L"Sábado" };
     static constexpr const wchar_t* MONTH_NAMES[] = { L"enero", L"febrero", L"marzo", L"abril", L"mayo", L"junio", L"julio",
                                                       L"agosto", L"septiembre", L"octubre", L"noviembre", L"diciembre" };
@@ -209,6 +237,7 @@ public:
     // Starts the switch animation. Opening Sistema samples at once so memory and disk are not blank for a second.
     void TabChanged(int from, int to) {
         if (from == to) return;
+        if (from == TAB_SHELF) ShelfThumbsFree();
         tabFrom = from;
         tabDir = to > from ? 1 : -1;
         tabChangedAt = GetTickCount64();
@@ -316,7 +345,7 @@ public:
     }
 
     void Render(void* pvBits, int stride, int pixelWidth, int pixelHeight, float scale, bool expanded, NotchTab activeTab,
-                PomodoroManager& pomo, TodoManager& todo, EventManager& events, MediaManager& media, AICompanion& ai, AudioWakeEngine& wake) {
+                PomodoroManager& pomo, TodoManager& todo, EventManager& events, MediaManager& media, AICompanion& ai, AudioWakeEngine& wake, ShelfManager& shelf) {
         using namespace Gdiplus;
 
         const Perf perf = EffectivePerf(); // read once per frame: animations and glow off take the plain paths below
@@ -408,7 +437,7 @@ public:
             f->SetFormatFlags(StringFormatFlagsNoWrap);
         }
 
-        const wchar_t* tabIcons[] = { L"", L"", L"", L"",L"",L"",L"" };
+        const wchar_t* tabIcons[] = { L"", L"", L"", L"",L"",L"",L"", L"\uE8B7" };
         if (!expanded) {
             // === COLLAPSED NOTCH === left tile / centered text / right value; the first state that applies wins
             ULONGLONG t = GetTickCount64();
@@ -524,7 +553,6 @@ public:
         } else {
             // === EXPANDED NOTCH VIEW ===
             // 1. Icon tab row; active tab sits in a soft rounded square
-            const wchar_t* tabNames[] = { L"Música", L"Pomodoro", L"Tareas", L"Calendario", L"IA", L"Clima", L"Sistema" };
             // One highlight glides from the previous tab to the active one (tabEase 1 when settled)
             tabHits.clear();
             float tabP = perf.anim ? (std::min)(1.0f, (float)(GetTickCount64() - tabChangedAt) / TAB_ANIM_MS) : 1.0f;
@@ -538,9 +566,7 @@ public:
             SolidBrush accent(ACCENT);
             for (int i = 0; i < TAB_COUNT; ++i)
                 g.DrawString(tabIcons[i], -1, &iconFont, RectF(16.0f + i * TAB_STEP, 8.0f, (float)TAB_W, 30.0f), &center, i == activeTab ? &accent : &textDim);
-            int titleX = 16 + TAB_COUNT * TAB_STEP + 6; // the title stops before the gear
-            g.DrawString(tabNames[activeTab], -1, &fontMedium, RectF((float)titleX, 8.0f, (float)(width - 48 - titleX), 30.0f), &leftMid, &textWhite);
-            // Settings gear at the right end of the row, on every tab (the title above stops at x 412, so they never meet)
+            // Settings gear at the right end of the row, on every tab
             g.DrawString(L"", -1, &iconSmall, RectF((float)(width - 44), 8.0f, 32.0f, 30.0f), &center, &textDim);
 
             // 2. Tab Content Views
@@ -1370,6 +1396,83 @@ public:
                     tabHits.push_back({ RectF(width / 2.0f - 60.0f, 136.0f, 120.0f, 28.0f), unknown ? HIT_W_SETUP : HIT_W_RETRY, 0, 0 });
                 } else {
                     g.DrawString(L"Cargando…", -1, &fontSmall, RectF(20.0f, 104.0f, width - 40.0f, 24.0f), &center, &textDim);
+                }
+            } else if (activeTab == TAB_SHELF) {
+                // Header: the mode's name and the chip that switches it. Each mode has its own view: the shelf, or a drop zone.
+                g.DrawString(shelfSend ? L"Enviar al móvil" : L"Estante", -1, &fontTitle, RectF(20.0f, 48.0f, 200.0f, 26.0f), &leftMid, &textWhite);
+                // Switch of two icons, file (keep) and paper plane (send): the knob sits under the mode that is on
+                RectF chip(width - 92.0f, 49.0f, 72.0f, 24.0f);
+                GraphicsPath chipPath, knobPath;
+                AddRoundRect(chipPath, chip.X, chip.Y, chip.Width, chip.Height, 12.0f);
+                SolidBrush chipBg(Color(255, 44, 46, 52)), knob(ACCENT);
+                g.FillPath(&chipBg, &chipPath);
+                AddRoundRect(knobPath, chip.X + (shelfSend ? 37.0f : 2.0f), chip.Y + 2.0f, 33.0f, 20.0f, 10.0f);
+                g.FillPath(&knob, &knobPath);
+                g.DrawString(L"", -1, &iconSmall, RectF(chip.X + 2.0f, chip.Y, 33.0f, 24.0f), &center, shelfSend ? &textDim : &ink);
+                g.DrawString(L"", -1, &iconSmall, RectF(chip.X + 37.0f, chip.Y, 33.0f, 24.0f), &center, shelfSend ? &ink : &textDim);
+                tabHits.push_back({ chip, HIT_S_MODE, 0, 0 });
+
+                if (shelfSend) {
+                    // Send keeps nothing: only the drop zone and the state of the last send
+                    GraphicsPath zone;
+                    AddRoundRect(zone, 20.0f, 84.0f, width - 40.0f, 112.0f, 12.0f);
+                    Pen dash(Color(255, 70, 72, 78), 1.2f);
+                    dash.SetDashStyle(DashStyleDash);
+                    g.DrawPath(&dash, &zone);
+                    g.DrawString(L"", -1, &iconBig, RectF(20.0f, 100.0f, width - 40.0f, 40.0f), &center, &textDim);
+                    g.DrawString(L"Suelta aquí un archivo para enviarlo con Quick Share", -1, &fontSmall, RectF(28.0f, 146.0f, width - 56.0f, 24.0f), &center, &textDim);
+                    g.DrawString(shelfNote.c_str(), -1, &fontSmall, RectF(20.0f, 204.0f, width - 40.0f, 24.0f), &center, &textWhite);
+                } else {
+                    // The shelf's copies: a grid of thumbnails without names (up to 4 files: one row of big tiles; more: two rows
+                    // of small ones), or rows of names. A click opens the copy, the X sends it to the Recycle Bin.
+                    const bool thumbs = g_settings.shelfThumbs;
+                    const size_t N = shelf.files.size();
+                    const bool big = N <= 4;
+                    const size_t cols = big ? 4 : 7, rows = thumbs ? (big ? 4 : 14) : 5; // rows: how many fit on screen
+                    const float tileW = big ? 100.0f : 56.0f, tileH = big ? 120.0f : 58.0f, tileGap = big ? 6.6f : 4.6f;
+                    const float rowH = 26.0f, textX = 48.0f;
+                    shelfTop = (std::min)(shelfTop, N > rows ? N - rows : 0);
+                    float itemY = 80.0f;
+                    if (N == 0 && shelfNote.empty())
+                        g.DrawString(L"Arrastra archivos al notch para guardar una copia aquí", -1, &fontSmall, RectF(20.0f, 120.0f, width - 40.0f, 24.0f), &center, &textDim);
+                    for (size_t r = shelfTop; r < N && r < shelfTop + rows; ++r) {
+                        if (thumbs) {
+                            const size_t k = r - shelfTop;
+                            RectF tile(20.0f + (k % cols) * (tileW + tileGap), 80.0f + (k / cols) * (tileH + 6.0f), tileW, tileH);
+                            GraphicsPath tilePath;
+                            AddRoundRect(tilePath, tile.X, tile.Y, tile.Width, tile.Height, 8.0f);
+                            g.FillPath(&surface, &tilePath);
+                            const float box = (std::min)(tileW, tileH) - 8.0f;
+                            if (HBITMAP thumb = ShelfThumb(shelf.files[r], (int)(box * scale))) {
+                                // shortcut: FromHBITMAP drops the alpha channel, so a file-type icon gets a black box (barely seen on the dark tile). Images are opaque.
+                                Bitmap pic(thumb, (HPALETTE)NULL);
+                                float tw = pic.GetWidth() / scale, th = pic.GetHeight() / scale; // already fitted inside the box with its aspect kept
+                                g.DrawImage(&pic, tile.X + (tileW - tw) / 2.0f, tile.Y + (tileH - th) / 2.0f, tw, th);
+                            } else {
+                                g.DrawString(L"", -1, &iconBig, tile, &center, &textDim);
+                            }
+                            RectF xBox(tile.X + tileW - 19.0f, tile.Y + 3.0f, 16.0f, 16.0f); // the X sits on the tile's corner, over the picture
+                            SolidBrush xBg(Color(210, 8, 9, 12));
+                            g.FillEllipse(&xBg, xBox);
+                            g.DrawString(L"", -1, &iconSmall, xBox, &center, &textWhite);
+                            tabHits.push_back({ tile, HIT_S_ITEM, (int)r, 0 });
+                            tabHits.push_back({ xBox, HIT_S_REMOVE, (int)r, 0 });
+                            continue;
+                        } else {
+                            g.DrawString(L"", -1, &iconSmall, RectF(20.0f, itemY, 24.0f, rowH), &center, &textDim);
+                        }
+                        g.DrawString(ShelfManager::Name(shelf.files[r]).c_str(), -1, &fontSmall, RectF(textX, itemY, width - textX - 52.0f, rowH), &leftMid, &textWhite);
+                        g.DrawString(L"", -1, &iconSmall, RectF(width - 44.0f, itemY, 24.0f, rowH), &center, &textDim);
+                        tabHits.push_back({ RectF(20.0f, itemY, width - 68.0f, rowH), HIT_S_ITEM, (int)r, 0 });
+                        tabHits.push_back({ RectF(width - 44.0f, itemY, 24.0f, rowH), HIT_S_REMOVE, (int)r, 0 });
+                        itemY += rowH;
+                    }
+
+                    // Footer: a copy in progress or failed, else what a click does; with more files than fit, where the wheel is
+                    std::wstring foot = !shelfNote.empty() ? shelfNote : N == 0 ? L"" : L"Clic en un archivo para abrirlo";
+                    if (N > rows)
+                        foot += L" · " + std::to_wstring(shelfTop + 1) + L"-" + std::to_wstring((std::min)(shelfTop + rows, N)) + L" de " + std::to_wstring(N);
+                    g.DrawString(foot.c_str(), -1, &fontSmall, RectF(20.0f, 212.0f, width - 40.0f, 20.0f), &leftMid, &textDim);
                 }
             }
             g.Restore(gs);
