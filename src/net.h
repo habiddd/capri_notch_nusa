@@ -61,13 +61,13 @@ inline bool SplitUrl(const std::wstring& url, std::wstring& host, std::wstring& 
     return !host.empty();
 }
 
-// Blocking: call it off the UI thread. resp gets the raw body (capped at 8 MB), code the HTTP status.
+// Blocking: call it off the UI thread. resp gets the raw body (capped at cap, 8 MB unless asked), code the HTTP status.
 // False on network failure or an oversized body; an error status still returns true with code set.
 // headers: "Name: value\r\n" lines, body: raw bytes (JSON for POST/PATCH).
 // location: when set, redirects are not followed and the Location header comes back in it (see HttpsPostFollow).
 inline bool HttpsRequest(const wchar_t* method, const std::wstring& host, const std::wstring& pathAndQuery,
                          const std::wstring& headers, const std::string& body, std::string& resp, DWORD& code,
-                         std::wstring* location = nullptr) {
+                         std::wstring* location = nullptr, size_t cap = 8u << 20) {
     bool ok = false;
     code = 0;
     resp.clear();
@@ -94,7 +94,7 @@ inline bool HttpsRequest(const wchar_t* method, const std::wstring& host, const 
         DWORD avail = 0;
         // 8 MB: a Graph calendarView page of 500 events with bodies is well above LRCLIB's 1 MB answers
         while (WinHttpQueryDataAvailable(r, &avail) && avail > 0) {
-            if (resp.size() + avail > (8u << 20)) { ok = false; break; }
+            if (resp.size() + avail > cap) { ok = false; break; }
             size_t old = resp.size();
             resp.resize(old + avail);
             DWORD read = 0;

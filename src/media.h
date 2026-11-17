@@ -100,6 +100,37 @@ struct IStreamRef : public IInspectable { // Windows.Storage.Streams.IRandomAcce
 
 constexpr int ART_PX = 112; // cached cover size: 2x the 56 px tile, ~50 KB
 
+// A color lifted to a usable brightness, so dark sources still glow
+inline Gdiplus::Color LiftTint(double r, double g, double b) {
+    double k = 210.0 / (std::max)({ r, g, b, 1.0 });
+    return Gdiplus::Color(255, (BYTE)(r * k), (BYTE)(g * k), (BYTE)(b * k));
+}
+
+// Saturation-weighted average of each half (left, right) of bmp; false if its pixels cannot be read
+inline bool TwoTints(Gdiplus::Bitmap* bmp, Gdiplus::Color out[2]) {
+    int w = (int)bmp->GetWidth(), h = (int)bmp->GetHeight();
+    Gdiplus::BitmapData d;
+    Gdiplus::Rect r(0, 0, w, h);
+    if (bmp->LockBits(&r, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &d) != Gdiplus::Ok) return false;
+    double acc[2][4] = {};
+    for (int y = 0; y < h; ++y) {
+        const BYTE* row = (const BYTE*)d.Scan0 + y * d.Stride;
+        for (int x = 0; x < w; ++x) {
+            const BYTE* p = row + x * 4; // B, G, R, A
+            double wt = ((std::max)({ p[0], p[1], p[2] }) - (std::min)({ p[0], p[1], p[2] })) + 16.0;
+            double* a = acc[x * 2 / w];
+            a[0] += p[2] * wt;
+            a[1] += p[1] * wt;
+            a[2] += p[0] * wt;
+            a[3] += wt;
+        }
+    }
+    bmp->UnlockBits(&d);
+    for (int i = 0; i < 2; ++i)
+        out[i] = LiftTint(acc[i][0] / acc[i][3], acc[i][1] / acc[i][3], acc[i][2] / acc[i][3]);
+    return true;
+}
+
 class MediaManager {
 public:
     const std::wstring idleTitle = L"Esperando reproduccion...";
@@ -476,31 +507,8 @@ public:
         stream->Release();
     }
 
-    // Saturation-weighted average of each half, lifted to a usable brightness so dark covers still glow.
-    void ExtractTints() {
-        Gdiplus::BitmapData d;
-        Gdiplus::Rect r(0, 0, ART_PX, ART_PX);
-        if (art->LockBits(&r, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &d) != Gdiplus::Ok) return;
-        double acc[2][4] = {};
-        for (int y = 0; y < ART_PX; ++y) {
-            const BYTE* row = (const BYTE*)d.Scan0 + y * d.Stride;
-            for (int x = 0; x < ART_PX; ++x) {
-                const BYTE* p = row + x * 4; // B, G, R, A
-                double w = ((std::max)({ p[0], p[1], p[2] }) - (std::min)({ p[0], p[1], p[2] })) + 16.0;
-                double* a = acc[x * 2 / ART_PX];
-                a[0] += p[2] * w;
-                a[1] += p[1] * w;
-                a[2] += p[0] * w;
-                a[3] += w;
-            }
-        }
-        art->UnlockBits(&d);
-        for (int i = 0; i < 2; ++i) {
-            double rr = acc[i][0] / acc[i][3], gg = acc[i][1] / acc[i][3], bb = acc[i][2] / acc[i][3];
-            double k = 210.0 / (std::max)({ rr, gg, bb, 1.0 });
-            tint[i] = Gdiplus::Color(255, (BYTE)(rr * k), (BYTE)(gg * k), (BYTE)(bb * k));
-        }
-    }
+    // The cover's two tints (see TwoTints); the cover stays as it was if its pixels cannot be read.
+    void ExtractTints() { TwoTints(art, tint); }
 
     void FallbackScan() {
         EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {

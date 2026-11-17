@@ -11,13 +11,15 @@
 #include "../src/events.h"
 #include "../src/media.h"
 #include "../src/ai_client.h"
-#include "../src/audio_wake.h"
 #include <cassert>
 #include "../src/settings.h"
 #include "../src/tabs.h"
 #include "../src/ui.h"
 
 int main() {
+    Gdiplus::GdiplusStartupInput gsi;
+    ULONG_PTR tok;
+    Gdiplus::GdiplusStartup(&tok, &gsi, NULL);
     using V = std::vector<std::pair<int, std::wstring>>;
     V none, ev = { { 600, L"Pasado" }, { 930, L"Dentista" } };
     assert(CapriUI::IdleLine(ev, 700, 5, L"fecha") == L"15:30 · Dentista"); // future event wins, past one skipped
@@ -25,5 +27,15 @@ int main() {
     assert(CapriUI::IdleLine(ev, 931, 1, L"fecha") == L"1 pendiente");
     assert(CapriUI::IdleLine(none, 0, 3, L"fecha") == L"3 pendientes");
     assert(CapriUI::IdleLine(none, 0, 0, L"fecha") == L"fecha");
+
+    // The glow's colors: each half's average, lifted so its strongest channel is 210
+    {
+        Gdiplus::Bitmap two(2, 1, PixelFormat32bppARGB);
+        two.SetPixel(0, 0, Gdiplus::Color(255, 100, 0, 0));
+        two.SetPixel(1, 0, Gdiplus::Color(255, 0, 0, 50));
+        Gdiplus::Color t[2];
+        assert(TwoTints(&two, t));
+        assert(t[0].GetR() == 210 && t[0].GetG() == 0 && t[0].GetB() == 0 && t[1].GetB() == 210 && t[1].GetR() == 0);
+    }
     return 0;
 }

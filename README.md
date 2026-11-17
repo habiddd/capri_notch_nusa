@@ -41,10 +41,13 @@ Aplicación ultraligera de Dynamic Notch / Dynamic Island para Windows 11 escrit
    - Cliente HTTP WinHTTP nativo compatible con APIs OpenAI / DeepSeek / Ollama.
    - Consumo de RAM local adicional: ~0 MB (la inferencia se delega a la nube o servidor local).
 
-6. **🎙️ Wake-Up Call (Cactus AI - Whistle Speech)**:
-   - Se instala en disco local (`%LOCALAPPDATA%\CapriNotch\models\whistle.cact`, 16.9 MB).
-   - **Carga bajo demanda (Lazy-Loading)**: Al arrancar la app consume **0 MB en RAM**. Solo se carga a memoria cuando el usuario presiona el botón en la pestaña de IA.
-   - Al desactivarlo con el mismo botón, libera inmediatamente los 16.9 MB de la memoria y devuelve las páginas al sistema operativo.
+6. **🎙️ Dictado local (Cactus AI - Whistle)**:
+   - [Whistle](https://huggingface.co/Cactus-Compute/whistle) es un modelo de voz a texto de 16,9 MB que corre en la CPU, sin internet ni claves, en español, inglés, alemán, francés, italiano, neerlandés y polaco.
+   - Se descarga desde **Configuración → IA → Whistle (voz a texto)** (unos 18 MB de Hugging Face: el modelo y el motor oficial de Cactus `libcactus.dll` 4.1.1, que se comprueba con SHA-256 antes de usarse). Quedan en `%LOCALAPPDATA%\CapriNotch\`.
+   - Al elegir la pestaña **IA** con Whistle empieza a transcribir lo que dices; el texto aparece en la tarjeta (lo confirmado y, con puntos suspensivos, lo que aún puede cambiar). La barra de Whistle lo apaga y lo enciende. Se apaga solo al cambiar de pestaña o cerrar el notch, y mientras escucha el notch no se cierra.
+   - [Mirage](https://huggingface.co/Cactus-Compute/mirage) es un modelo de visión de 21,6 MB sobre el mismo motor de Cactus. Se descarga desde **Configuración → IA → Mirage (ve tu pantalla)**. En la pestaña **IA**, los chips **Whistle | Mirage** eligen el modelo; con Mirage la barra comparte la pantalla: un proceso aparte (`capri_notch.exe --mirage`) mira el monitor del notch cada dos segundos y la tarjeta muestra la escena y el texto que lee. Nada sale del PC. Nunca arranca solo, y termina al cambiar de pestaña o cerrar el notch.
+   - Mirage describe y lee la pantalla, no responde preguntas.
+   - El modelo nunca se carga en el notch: corre en un proceso aparte (`capri_notch.exe --whistle`). Apagarlo termina ese proceso y Windows recupera toda su memoria al instante.
 
 7. **Clima y sistema (pestañas nuevas)**:
    - **Clima**: temperatura, sensación térmica, humedad, viento y máxima/mínima de hoy para tu ubicación: la de Windows si la tienes activada; si no, una aproximada por tu IP ([ipwho.is](https://ipwho.is)), o la ciudad que escribas en Configuración → Clima. Usa la API abierta [Open-Meteo](https://open-meteo.com), sin clave: la ciudad que escribes se envía a su buscador de ubicaciones, y a Open-Meteo van las coordenadas. Con la ubicación automática y la de Windows desactivada, [ipwho.is](https://ipwho.is) ve tu IP. Todo ello solo mientras la pestaña Clima está abierta, como mucho cada 15 minutos.
@@ -64,7 +67,7 @@ Doble clic en `install.bat` o desde CMD:
 ```cmd
 install.bat
 ```
-Esto compila el binario, instala `capri_notch.exe` y el modelo local `whistle.cact` en `%LOCALAPPDATA%\CapriNotch\`, y crea un acceso directo en tu Escritorio.
+Esto compila el binario, instala `capri_notch.exe` en `%LOCALAPPDATA%\CapriNotch\`, y crea un acceso directo en tu Escritorio.
 
 ### Solo Compilar (Desarrollo):
 ```cmd
@@ -143,6 +146,7 @@ El menú del icono de la bandeja tiene **Configuración**, **Ocultar notch** / *
 - **Clima**: detectar mi ubicación (la de Windows o, si no, la aproximada por IP) o una ciudad escrita; con el campo vacío es automática.
 - **Sistema**: temperaturas de CPU y GPU, y potencia de la batería, cuando Windows las ofrece.
 - **Rendimiento**: animaciones, fotogramas (60 o 30), luz ambiental y degradados, cada cuánto se leen los sensores de Sistema (1, 2 o 5 s) y ahorro con batería (sin animaciones ni luces y a 30 fps al desenchufar); también el ecualizador y los ojos de la píldora, que se mueven aunque las animaciones estén apagadas. Se aplican al instante.
+- **Configuración → Rendimiento → Color de la luz**: elige la luz del pie del panel cuando no suena música: Clásico (azul y dorado), Fondo (dos colores del fondo de escritorio), Windows (el color de acento) o Propio (dos colores que eliges). Solo se recalcula al cambiar el ajuste, el fondo o el acento.
 - **IA**: proveedor (OpenAI, DeepSeek, Ollama local o Personalizado), modelo y clave de API. Con Personalizado se editan también el servidor, la ruta, el puerto y HTTPS. Ollama no necesita clave.
 - **Acerca de**: versión, memoria en uso, abrir la carpeta de datos y salir.
 

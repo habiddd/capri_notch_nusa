@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 #include <psapi.h>
 #include <shellapi.h>
+#include <commdlg.h>
 #include <gdiplus.h>
 #include <algorithm>
 #include <functional>
@@ -11,6 +12,7 @@
 #include "settings.h"
 #include "sync.h"
 #include "events.h"
+#include "whistle.h"
 
 // The settings window: an ordinary window painted with GDI+ into an off-screen bitmap, in the notch's look. Every change is
 // saved and posted to the notch (WM_SETTINGS_CHANGED), which applies it at once. Account and key actions go through hooks.
@@ -131,9 +133,9 @@ private:
               ID_SYNC_MIN, ID_AI_PROVIDER, ID_AI_HTTPS, ID_WEATHER_AUTO, ID_SYS_TEMPS, ID_SYS_POWER, ID_TASKS_CAL,
               ID_PILL_ART, ID_PILL_ARTIST, ID_PILL_POMO_IDLE, ID_PILL_POMO_BAR, ID_PILL_POMO_SESSIONS, ID_PILL_SYS, ID_PILL_SYS_CPU,
               ID_PILL_SYS_GPU, ID_PILL_SYS_RAM, ID_PILL_SYS_DISK, ID_PILL_SYS_POWER, // the ID_PILL_ block follows PillFlags' order
-              ID_PERF_ANIM, ID_PERF_GLOW, ID_PERF_SAVER, ID_PERF_FPS, ID_PERF_SENSOR, ID_SHELF_THUMBS };
+              ID_PERF_ANIM, ID_PERF_GLOW, ID_PERF_SAVER, ID_PERF_FPS, ID_PERF_SENSOR, ID_SHELF_THUMBS, ID_GLOW_SOURCE };
     enum Field { F_HOST, F_PATH, F_MODEL, F_PORT, F_KEY, F_G_URL, F_MS_ID, F_ICS, F_WCITY };
-    enum BtnId { B_MONITOR, B_CLEAR_KEY, B_DATA, B_QUIT, B_GUIDE, B_COPY_SCRIPT, B_ACC_CONNECT, B_ACC_DISCONNECT, B_ACC_SYNC };
+    enum BtnId { B_MONITOR, B_CLEAR_KEY, B_DATA, B_QUIT, B_GUIDE, B_COPY_SCRIPT, B_WHISTLE, B_GLOW_COLOR, B_ACC_CONNECT, B_ACC_DISCONNECT, B_ACC_SYNC };
     enum HitKind { HK_SECTION, HK_BOOL, HK_STEP, HK_CHIP, HK_FIELD, HK_BUTTON };
 
     struct Hit { Gdiplus::RectF r; int kind, a, b; };
@@ -272,6 +274,7 @@ private:
         case ID_SYNC_MIN: return &s.syncMinutes;
         case ID_PERF_FPS: return &s.perfFps;
         case ID_PERF_SENSOR: return &s.perfSensorSec;
+        case ID_GLOW_SOURCE: return &s.glowSource;
         default: return &s.aiProvider; // ID_AI_PROVIDER
         }
     }
@@ -283,6 +286,7 @@ private:
         case ID_SYNC_MIN: return { { L"5 min", L"15 min", L"30 min" }, { 5, 15, 30 } };
         case ID_PERF_FPS: return { { L"60 fps", L"30 fps" }, { 60, 30 } };
         case ID_PERF_SENSOR: return { { L"1 s", L"2 s", L"5 s" }, { 1, 2, 5 } };
+        case ID_GLOW_SOURCE: return { { L"Clásico", L"Fondo", L"Windows", L"Propio" }, { 0, 1, 2, 3 } };
         default: return { { L"OpenAI", L"DeepSeek", L"Ollama local", L"Personalizado" }, { 0, 1, 2, 3 } }; // ID_AI_PROVIDER
         }
     }
@@ -430,6 +434,34 @@ private:
         case B_QUIT: hooks.command(2); break;
         case B_GUIDE: ShellExecuteW(wnd, L"open", ExeFile(L"README.md").c_str(), NULL, NULL, SW_SHOWNORMAL); break; // shortcut: the README sits next to the exe, a project folder build only
         case B_COPY_SCRIPT: CopyScript(); break;
+        case B_WHISTLE: // src is the model. Installed: remove it (fails quietly while the notch is using it); else download it
+            if (g_cactusDownload[src] == 1) break;
+            if (CactusInstalled(src)) {
+                DeleteFileW(CactusModel(src).c_str());
+                if (!CactusInstalled(1 - src)) DeleteFileW(WhistleDll().c_str()); // the runtime goes with the last model
+            } else {
+                CactusDownload(src);
+            }
+            Invalidate();
+            break;
+        case B_GLOW_COLOR: { // src 0 left, 1 right. Windows' own color dialog, loaded only for this click so it costs no memory otherwise
+            int& v = src ? g_settings.glowRight : g_settings.glowLeft;
+            static COLORREF custom[16];
+            CHOOSECOLORW cc = { sizeof cc };
+            cc.hwndOwner = wnd;
+            cc.lpCustColors = custom;
+            cc.rgbResult = RGB((v >> 16) & 255, (v >> 8) & 255, v & 255);
+            cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+            typedef BOOL (WINAPI *ChooseFn)(CHOOSECOLORW*);
+            HMODULE dlg = LoadLibraryExW(L"comdlg32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            ChooseFn choose = dlg ? (ChooseFn)(void*)GetProcAddress(dlg, "ChooseColorW") : NULL;
+            if (choose && choose(&cc)) {
+                v = GetRValue(cc.rgbResult) << 16 | GetGValue(cc.rgbResult) << 8 | GetBValue(cc.rgbResult);
+                Changed();
+            }
+            if (dlg) FreeLibrary(dlg);
+            break;
+        }
         default: hooks.account(src, b - B_ACC_CONNECT); break;
         }
         if (b == B_ACC_CONNECT || b == B_ACC_DISCONNECT || b == B_ACC_SYNC) Invalidate();
@@ -740,6 +772,18 @@ private:
             row(L"Animaciones", L"Rebote al abrir, cambio de pestaña y transiciones"); toggle(ID_PERF_ANIM); next();
             row(L"Fotogramas", L"Menos fotogramas, menos uso de CPU"); chips(ID_PERF_FPS); next();
             row(L"Luz ambiental y degradados", L"El brillo de color del panel y los fondos degradados"); toggle(ID_PERF_GLOW); next();
+            row(L"Color de la luz", L"Sin música. Con música manda la carátula", 200.0f); chips(ID_GLOW_SOURCE); next();
+            if (g_settings.glowSource == 3) {
+                row(L"Colores propios", L"Izquierda y derecha del panel");
+                button(CR - 206.0f, B_GLOW_COLOR, 0, 100.0f, L"Izquierda");
+                button(CR - 100.0f, B_GLOW_COLOR, 1, 100.0f, L"Derecha");
+                for (int i = 0; i < 2; ++i) { // a dot of the current color inside each button
+                    int v = i ? g_settings.glowRight : g_settings.glowLeft;
+                    SolidBrush c(Color(255, (BYTE)(v >> 16), (BYTE)(v >> 8), (BYTE)v));
+                    g.FillEllipse(&c, CR - (i ? 100.0f : 206.0f) + 8.0f, ry + 23.0f, 10.0f, 10.0f);
+                }
+                next();
+            }
             row(L"Lectura de sensores", L"Cada cuánto se leen CPU, GPU y batería en Sistema"); chips(ID_PERF_SENSOR); next();
             row(L"Ahorro con batería", L"Sin animaciones ni luces y a 30 fps al desenchufar"); toggle(ID_PERF_SAVER); next();
             row(L"Ecualizador", L"Barras animadas en la píldora mientras suena música"); toggle(ID_EQUALIZER); next();
@@ -757,6 +801,16 @@ private:
                 row(L"Ruta", L"Por ejemplo /v1/chat/completions", 240.0f); field(F_PATH, CR - 260.0f, 260.0f); next();
                 row(L"Puerto", L"443 para https, 11434 para Ollama", 240.0f); field(F_PORT, CR - 100.0f, 80.0f); next();
                 row(L"HTTPS", L"Conexión cifrada"); toggle(ID_AI_HTTPS); next();
+            }
+            for (int m = 0; m < CACTUS_COUNT; ++m) {
+                static const wchar_t* titles[] = { L"Whistle (voz a texto)", L"Mirage (ve tu pantalla)" };
+                static const wchar_t* sizes[] = { L"17", L"22" };
+                const bool has = CactusInstalled(m), busy = g_cactusDownload[m] == 1;
+                const std::wstring mb = sizes[m];
+                row(titles[m], busy ? L"Descargando de Hugging Face… (" + mb + L" MB)" : has ? L"Instalado · modelo local de Cactus, " + mb + L" MB en disco"
+                                   : g_cactusDownload[m] == 2 ? std::wstring(L"No se pudo descargar. Revisa tu conexión") : L"No instalado · " + mb + L" MB, se ejecuta en tu PC");
+                button(CR - 110.0f, B_WHISTLE, m, 110.0f, busy ? L"Descargando" : has ? L"Borrar" : L"Descargar");
+                next();
             }
             break;
         case SEC_ABOUT: {

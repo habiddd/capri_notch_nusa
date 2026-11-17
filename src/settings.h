@@ -47,6 +47,8 @@ struct Settings {
     // Performance
     bool perfAnimations = true;    // resize spring, tab/open/lyric transitions, settings-window transitions
     bool perfGlow = true;          // ambient light and gradients
+    int glowSource = 0;                             // the glow's colors while no cover shows: 0 classic blue and gold, 1 the wallpaper, 2 Windows' accent, 3 the two below
+    int glowLeft = 0x2856C8, glowRight = 0xBE9628;  // 0xRRGGBB
     int perfFps = 60;              // 60 or 30: rate of the animation timer
     int perfSensorSec = 1;         // 1, 2 or 5: seconds between Sistema readings
     bool perfBatterySaver = false; // on battery: no animations, no glow, at most 30 fps
@@ -142,6 +144,9 @@ inline bool LoadSettings(const std::wstring& path, Settings& s) {
     str(L"weatherCityName", s.weatherCityName);
     flag(L"perfAnimations", s.perfAnimations);
     flag(L"perfGlow", s.perfGlow);
+    num(L"glowSource", s.glowSource, 0, 3);
+    num(L"glowLeft", s.glowLeft, 0, 0xFFFFFF);
+    num(L"glowRight", s.glowRight, 0, 0xFFFFFF);
     numIn(L"perfFps", s.perfFps, { 30, 60 });
     numIn(L"perfSensorSec", s.perfSensorSec, { 1, 2, 5 });
     flag(L"perfBatterySaver", s.perfBatterySaver);
@@ -187,6 +192,9 @@ inline bool SaveSettings(const std::wstring& path, const Settings& s) {
     line(L"weatherCityName", s.weatherCityName);
     line(L"perfAnimations", flag(s.perfAnimations));
     line(L"perfGlow", flag(s.perfGlow));
+    line(L"glowSource", std::to_wstring(s.glowSource));
+    line(L"glowLeft", std::to_wstring(s.glowLeft));
+    line(L"glowRight", std::to_wstring(s.glowRight));
     line(L"perfFps", std::to_wstring(s.perfFps));
     line(L"perfSensorSec", std::to_wstring(s.perfSensorSec));
     line(L"perfBatterySaver", flag(s.perfBatterySaver));

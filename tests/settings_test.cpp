@@ -122,16 +122,19 @@ int main() {
     // Performance: defaults, round trip, values outside their list are ignored
     Settings pd;
     assert(pd.perfAnimations && pd.perfGlow && pd.perfFps == 60 && pd.perfSensorSec == 1 && !pd.perfBatterySaver);
+    assert(pd.glowSource == 0 && pd.glowLeft == 0x2856C8 && pd.glowRight == 0xBE9628);
     Settings pw;
     pw.perfAnimations = false; pw.perfGlow = false; pw.perfFps = 30; pw.perfSensorSec = 5; pw.perfBatterySaver = true;
+    pw.glowSource = 3; pw.glowLeft = 0x112233; pw.glowRight = 0xABCDEF;
     assert(SaveSettings(ini, pw));
     Settings pr;
     assert(LoadSettings(ini, pr));
     assert(!pr.perfAnimations && !pr.perfGlow && pr.perfFps == 30 && pr.perfSensorSec == 5 && pr.perfBatterySaver);
-    assert(WriteBytesFile(ini, "perfFps=45\r\nperfSensorSec=3\r\n"));
+    assert(pr.glowSource == 3 && pr.glowLeft == 0x112233 && pr.glowRight == 0xABCDEF);
+    assert(WriteBytesFile(ini, "perfFps=45\r\nperfSensorSec=3\r\nglowSource=9\r\n"));
     Settings po;
     assert(LoadSettings(ini, po));
-    assert(po.perfFps == 60 && po.perfSensorSec == 1);
+    assert(po.perfFps == 60 && po.perfSensorSec == 1 && po.glowSource == 0);
 
     // EffectivePerf: the battery saver applies only when on and unplugged
     Settings ep;

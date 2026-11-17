@@ -15,7 +15,7 @@
 #include "events.h"
 #include "media.h"
 #include "ai_client.h"
-#include "audio_wake.h"
+#include "whistle.h"
 #include "ui.h"
 #include "sync.h"
 #include "settings.h"
@@ -123,7 +123,7 @@ public:
     EventManager events;
     MediaManager media;
     AICompanion ai;
-    AudioWakeEngine wakeEngine;
+    WhistleEngine whistle;
 
     bool expanded = false;
     bool isTrackingMouse = false;
@@ -214,7 +214,6 @@ public:
         if (GetSystemPowerStatus(&ps) && !(ps.BatteryFlag & 128) && ps.ACLineStatus != 255) lastAc = ps.ACLineStatus;
         g_onBattery = lastAc == 0;
 
-        // Whistle engine starts dormant/unloaded (0 MB RAM) until explicitly loaded by user button
         SetTimer(hWnd, TIMER_SECOND, 1000, NULL);  // 1s logic tick
         LoadSettings(SettingsIniPath(), g_settings);
         g_settings.startWithWindows = RunAtLogin(); // the Run key is the truth, not the ini
@@ -244,6 +243,7 @@ public:
         ApplyFrameRate();
         ApplyVisibility();
         UpdateTargetDimensions();
+        ui.RefreshGlow();
         UpdateDisplay();
     }
 
@@ -403,6 +403,7 @@ public:
         expanded = exp;
         if (!exp) {
             ui.ShelfThumbsFree(); // thumbnails live only while the shelf is on screen
+            whistle.Stop(); // the microphone is never left on behind a closed notch
             ui.editing = false; // the event window, if open, stays with its draft
             ui.calSel = 0; // the calendar reopens on today (in the view it was left on)
             ui.calEvent = -1;
@@ -426,7 +427,7 @@ public:
         ui.linkGoogle = ics.account.find(L"google") != std::wstring::npos; // the link's host decides its agenda mark, G or O
 
         // Render UI with correct scanline stride
-        ui.Render(pvBits, stride, pw, ph, scale, expanded, activeTab, pomo, todo, events, media, ai, wakeEngine, shelf);
+        ui.Render(pvBits, stride, pw, ph, scale, expanded, activeTab, pomo, todo, events, media, ai, whistle, shelf);
         if (!expanded && targetWidth != ui.pillWidth + 2 * NOTCH_SHOULDER) UpdateTargetDimensions(); // new text: the animation tick resizes
 
         int posX = monitorLeft + (monitorWidth - pw) / 2;
@@ -536,6 +537,7 @@ public:
     }
 
     void OnSecondTick() {
+        if (whistle.process && !whistle.Running()) UpdateDisplay(); // the worker ended by itself: show why
         CheckReminders();
         CheckFullscreen();
         pomo.Tick();
@@ -844,6 +846,7 @@ public:
 
     // A file is being dragged over the notch, or was just dropped: open on Archivos so the drop has somewhere to land
     void OnDragNear() {
+        whistle.Stop();
         KillTimer(hWnd, TIMER_LEAVE);
         SetTucked(false);
         ui.TabChanged(activeTab, TAB_SHELF);
@@ -1089,6 +1092,8 @@ public:
                     ui.TabChanged(activeTab, (NotchTab)i);
                     activeTab = (NotchTab)i;
                     ui.editing = false;
+                    if (i == TAB_AI && whistle.model == CACTUS_WHISTLE) whistle.Start(hWnd); // choosing the tab starts the dictation; the screen is only shared by a click
+                    else whistle.Stop();
                     if (i == TAB_CALENDAR) ui.CalHome();
                     if (i == TAB_WEATHER) FetchWeather();
                     sensorTick = 0; // the first second on Sistema reads the sensors again
@@ -1151,17 +1156,29 @@ public:
                 }
             UpdateDisplay();
         } else if (activeTab == TAB_AI) {
-            // Whistle on-demand load/unload button (y: 70..98)
-            if (y >= 70 && y <= 98 && x >= 20 && x <= w - 20) {
-                wakeEngine.Toggle([this](const std::wstring& transcript) {
-                    PostMessage(hWnd, WM_USER + 100, 0, 0);
-                });
+            if (y >= 46 && y < 70 && x >= w - 156 && x <= w - 20) {
+                // Model chips: Whistle (w-156..w-90) and Mirage (w-86..w-20); changing ends the one that was running
+                int m = x < w - 88 ? CACTUS_WHISTLE : CACTUS_MIRAGE;
+                if (m != whistle.model) {
+                    whistle.Stop();
+                    whistle.model = m;
+                    whistle.text.clear();
+                    whistle.error.clear();
+                }
+                UpdateDisplay();
+            } else if (y >= 70 && y <= 98 && x >= 20 && x <= w - 20) {
+                // The chosen model's bar: on and off; without the download it opens the setting that gets it
+                if (!CactusInstalled(whistle.model)) return OpenSettings(SettingsWindow::SEC_AI);
+                if (whistle.Running()) whistle.Stop();
+                else whistle.Start(hWnd);
                 UpdateDisplay();
             } else if (y >= 192 && y <= 222) {
                 // Quick prompts (y: 192..222)
                 if (x >= 24 && x <= 194) {
+                    whistle.text.clear(); // the answer takes the card back from an old dictation
                     ai.Ask(L"Resume brevemente el enfoque para hoy");
                 } else if (x >= 204 && x <= 374) {
+                    whistle.text.clear();
                     ai.Ask(L"Dame un consejo rapido para concentrarme mejor");
                 }
                 UpdateDisplay();
@@ -1245,7 +1262,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (!g_App.tucked && g_App.CursorOver()) g_App.SetExpanded(true);
         } else if (wParam == TIMER_LEAVE) {
             KillTimer(hWnd, TIMER_LEAVE);
-            if (!g_App.CursorOver() && !g_App.ui.editing) g_App.SetExpanded(false); // typing keeps it open
+            if (!g_App.CursorOver() && !g_App.ui.editing && !g_App.whistle.Running()) g_App.SetExpanded(false); // typing or dictating keeps it open
         } else if (wParam == TIMER_TUCK) {
             g_App.OnTuckTick();
         } else if (wParam == TIMER_SYNC) {
@@ -1369,16 +1386,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_App.UpdateDisplay();
         break;
 
+    case WM_COPYDATA: { // the Whistle worker's answers (WhistleSend)
+        const COPYDATASTRUCT* cd = (const COPYDATASTRUCT*)lParam;
+        if (cd && g_App.whistle.process && cd->cbData < (1u << 18))
+            g_App.whistle.OnMessage(cd->dwData, std::string((const char*)cd->lpData, cd->cbData));
+        g_App.UpdateDisplay();
+        return TRUE;
+    }
+
     case WM_SETTINGS_CHANGED:
         g_App.ApplySettings();
         break;
 
-    case WM_USER + 100: // Audio wake trigger
-        g_App.SetExpanded(true);
-        g_App.ui.TabChanged(g_App.activeTab, TAB_AI);
-        g_App.activeTab = TAB_AI;
+    case WM_SETTINGCHANGE:              // a new wallpaper...
+    case WM_DWMCOLORIZATIONCOLORCHANGED: // ...or accent: the glow that follows them is read again, once
+        if (g_settings.glowSource != 1 && g_settings.glowSource != 2) return DefWindowProc(hWnd, msg, wParam, lParam);
+        if (msg == WM_SETTINGCHANGE && wParam != SPI_SETDESKWALLPAPER) return DefWindowProc(hWnd, msg, wParam, lParam);
+        g_App.ui.RefreshGlow(true);
         g_App.UpdateDisplay();
-        break;
+        return DefWindowProc(hWnd, msg, wParam, lParam);
 
     case WM_USER + 101: // Re-open or expand request from duplicate launch
         g_App.SetTucked(false);
@@ -1404,6 +1430,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    // Worker mode: this process is the Whistle or Mirage engine of a running notch (see whistle.h). It must not reach the single-instance check.
+    if (const char* w = strstr(lpCmdLine, "--whistle ")) return WhistleWorker((HWND)(UINT_PTR)strtoull(w + 10, NULL, 10));
+    if (const char* m = strstr(lpCmdLine, "--mirage ")) return MirageWorker((HWND)(UINT_PTR)strtoull(m + 9, NULL, 10));
+
     // Quick debug log
     FILE* dbg = fopen("C:\\capri_debug.txt", "w");
     if (dbg) { fprintf(dbg, "START\n"); fflush(dbg); }

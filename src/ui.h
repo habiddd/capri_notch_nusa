@@ -9,6 +9,7 @@
 #include "ai_client.h"
 #include "tabs.h"
 #include "shelf.h"
+#include "whistle.h"
 #include <cmath>
 #include <ctime>
 
@@ -324,6 +325,43 @@ public:
         g.FillPath(&b, &e);
     }
 
+    Gdiplus::Color idleTint[2] = { Gdiplus::Color(255, 40, 86, 200), Gdiplus::Color(255, 190, 150, 40) }; // the glow while no cover shows (RefreshGlow)
+
+    // Sets idleTint from the chosen source (settings.h glowSource). Called at start and when the setting, the wallpaper or
+    // Windows' accent changes, never per frame: the wallpaper is decoded once into 16x16 px and freed.
+    void RefreshGlow(bool force = false) {
+        const Settings& s = g_settings;
+        static int was[3] = { -1, 0, 0 };
+        if (!force && was[0] == s.glowSource && was[1] == s.glowLeft && was[2] == s.glowRight) return; // other settings changed, not this one
+        was[0] = s.glowSource; was[1] = s.glowLeft; was[2] = s.glowRight;
+        auto rgb = [](int v) { return Gdiplus::Color(255, (BYTE)(v >> 16), (BYTE)(v >> 8), (BYTE)v); };
+        idleTint[0] = rgb(0x2856C8); // classic, and what stays when a source cannot be read
+        idleTint[1] = rgb(0xBE9628);
+        if (s.glowSource == 3) {
+            idleTint[0] = rgb(s.glowLeft);
+            idleTint[1] = rgb(s.glowRight);
+        } else if (s.glowSource == 1 || s.glowSource == 2) {
+            bool done = false;
+            if (s.glowSource == 1) {
+                wchar_t path[MAX_PATH] = L"";
+                SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, path, 0);
+                Gdiplus::Bitmap full(path), small(16, 16, PixelFormat32bppARGB);
+                if (path[0] && full.GetLastStatus() == Gdiplus::Ok && full.GetWidth() > 0) {
+                    {
+                        Gdiplus::Graphics sg(&small); // scoped: TwoTints locks the bitmap
+                        done = sg.DrawImage(&full, Gdiplus::Rect(0, 0, 16, 16)) == Gdiplus::Ok;
+                    }
+                    done = done && TwoTints(&small, idleTint);
+                }
+                SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); // the wallpaper was decoded: hand its pages back
+            }
+            // Windows' accent (it follows the wallpaper when Windows picks it), also for a desktop with no picture. The value is 0xAABBGGRR.
+            DWORD abgr = 0, n = sizeof abgr;
+            if (!done && RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"AccentColor", RRF_RT_REG_DWORD, NULL, &abgr, &n) == ERROR_SUCCESS)
+                idleTint[0] = idleTint[1] = LiftTint(abgr & 255, (abgr >> 8) & 255, (abgr >> 16) & 255);
+        }
+    }
+
     // Texture-fill instead of clipping: path clips in GDI+ are not anti-aliased, the fill edge is.
     void FillArt(Gdiplus::Graphics& g, Gdiplus::Bitmap* art, float x, float y, float size, float radius) {
         Gdiplus::GraphicsPath p;
@@ -344,10 +382,11 @@ public:
     }
 
     void Render(void* pvBits, int stride, int pixelWidth, int pixelHeight, float scale, bool expanded, NotchTab activeTab,
-                PomodoroManager& pomo, TodoManager& todo, EventManager& events, MediaManager& media, AICompanion& ai, AudioWakeEngine& wake, ShelfManager& shelf) {
+                PomodoroManager& pomo, TodoManager& todo, EventManager& events, MediaManager& media, AICompanion& ai, WhistleEngine& wake, ShelfManager& shelf) {
         using namespace Gdiplus;
 
         const Perf perf = EffectivePerf(); // read once per frame: animations and glow off take the plain paths below
+        const Color* tint = media.art ? media.tint : idleTint; // the cover's colors while there is one, else the chosen ones
 
         // Wrap DIB section in GDI+ Graphics with exact scanline stride
         Bitmap bitmap(pixelWidth, pixelHeight, stride, PixelFormat32bppARGB, (BYTE*)pvBits);
@@ -379,10 +418,10 @@ public:
         }
 
         if (expanded && perf.glow) {
-            // Ambient light pooling at the base, tinted by the cover (blue/gold when nothing plays)
+            // Ambient light pooling at the base, tinted by the cover, else by the chosen idle colors
             g.SetClip(&notchPath);
-            const Color& l = media.tint[0];
-            const Color& r = media.tint[1];
+            const Color& l = tint[0];
+            const Color& r = tint[1];
             Glow(g, fullWidth * 0.10f, (float)height, fullWidth * 0.55f, height * 0.75f, Color(72, l.GetR(), l.GetG(), l.GetB()));
             Glow(g, fullWidth * 0.95f, (float)height, fullWidth * 0.50f, height * 0.70f, Color(80, r.GetR(), r.GetG(), r.GetB()));
             g.ResetClip();
@@ -508,7 +547,7 @@ public:
                 centerText = ClosedLyric(media, pomo);
                 if (centerText.empty()) centerText = media.currentTitle + (g_settings.pillArtist && !media.currentArtist.empty() ? L" · " + media.currentArtist : L"");
                 // Equalizer: 4 bars dancing while playing, flat at 4 px when paused
-                const Color& tn = media.tint[1];
+                const Color& tn = tint[1];
                 SolidBrush bar(Color(255, (tn.GetR() + 255) / 2, (tn.GetG() + 255) / 2, (tn.GetB() + 255) / 2));
                 for (int i = 0; g_settings.equalizer && i < 4; ++i) {
                     float h = media.isPlaying ? 4.0f + 10.0f * (0.5f + 0.5f * sinf(t * 0.012f + i * 1.7f)) : 4.0f;
@@ -1252,27 +1291,50 @@ public:
 
             } else if (activeTab == TAB_AI) {
                 g.DrawString(L"Compañero Capri", -1, &fontTitle, RectF(20.0f, 44.0f, 240.0f, 26.0f), &leftMid, &textWhite);
-                g.DrawString(L"Cloud / Local", -1, &fontSmall, RectF(20.0f, 44.0f, (float)(width - 40), 26.0f), &rightMid, &textDim);
+                // Model chips: Whistle and Mirage, the one chosen is filled (the click handler uses the same spots)
+                for (int i = 0; i < CACTUS_COUNT; ++i) {
+                    const float cx = width - 156.0f + i * 70.0f;
+                    GraphicsPath chip;
+                    AddRoundRect(chip, cx, 46.0f, 66.0f, 22.0f, 8.0f);
+                    if (i == wake.model) {
+                        SolidBrush chipOn(Color(255, 44, 46, 52));
+                        g.FillPath(&chipOn, &chip);
+                    }
+                    g.DrawString(CACTUS_NAME[i], -1, &fontSmall, RectF(cx, 46.0f, 66.0f, 22.0f), &center, i == wake.model ? &textWhite : &textDim);
+                }
 
-                // On-demand Whistle local model toggle (loads/unloads 16.9 MB)
+                // Model bar: speech to text (Whistle) or the screen described (Mirage) in a worker process. A click turns it on and off; off ends the worker and frees all its memory.
+                const bool wInstalled = CactusInstalled(wake.model), wOn = wake.Running(), wLive = wOn && wake.ready;
+                const bool wMirage = wake.model == CACTUS_MIRAGE;
+                const std::wstring wName = CACTUS_NAME[wake.model];
                 GraphicsPath bWhistle;
                 AddRoundRect(bWhistle, 20.0f, 72.0f, (float)(width - 40), 24.0f, 8.0f);
-                SolidBrush whistleBg(wake.isModelLoaded ? Color(255, 16, 44, 28) : Color(255, 22, 23, 27));
+                SolidBrush whistleBg(wLive ? Color(255, 16, 44, 28) : Color(255, 22, 23, 27));
                 g.FillPath(&whistleBg, &bWhistle);
                 g.DrawPath(&surfaceEdge, &bWhistle);
-                SolidBrush dot(wake.isModelLoaded ? Color(255, 74, 222, 128) : Color(255, 90, 92, 98));
+                SolidBrush dot(wLive ? Color(255, 74, 222, 128) : !wake.error.empty() ? Color(255, 239, 68, 68) : Color(255, 90, 92, 98));
                 g.FillEllipse(&dot, 32.0f, 80.0f, 8.0f, 8.0f);
-                g.DrawString(wake.isModelLoaded ? L"Whistle activo · 16.9 MB en RAM · clic para descargar"
-                                                : L"Whistle local · en disco (0 MB en RAM) · clic para cargar",
-                             -1, &fontSmall, RectF(48.0f, 72.0f, (float)(width - 80), 24.0f), &leftMid, wake.isModelLoaded ? &accentGreen : &textDim);
+                std::wstring wLabel = !wInstalled ? wName + L" no está instalado · clic para descargarlo en Configuración"
+                                    : wLive ? (wMirage ? std::wstring(L"Compartiendo tu pantalla con Mirage · clic para dejar de compartir") : std::wstring(L"Escuchando · clic para apagar y liberar la memoria"))
+                                    : wOn ? L"Cargando " + wName + L"…"
+                                    : !wake.error.empty() ? wake.error + L" · clic para reintentar"
+                                    : wMirage ? wName + L" apagado · 0 MB en RAM · clic para compartir la pantalla"
+                                    : wName + L" apagado · 0 MB en RAM · clic para dictar";
+                g.DrawString(wLabel.c_str(), -1, &fontSmall, RectF(48.0f, 72.0f, (float)(width - 80), 24.0f), &leftMid, wLive ? &accentGreen : &textDim);
 
-                // Response card
+                // Card: the dictation while there is one (what is settled, then the words still changing), else the companion's answer
                 GraphicsPath card;
                 AddRoundRect(card, 20.0f, 102.0f, (float)(width - 40), 82.0f, 10.0f);
                 g.FillPath(&surface, &card);
                 g.DrawPath(&surfaceEdge, &card);
                 std::wstring response;
-                {
+                if (wOn || !wake.text.empty()) {
+                    response = wake.text;
+                    if (!wake.pending.empty()) response += (response.empty() ? L"" : L" ") + wake.pending + L"…";
+                    if (response.empty() && wLive) response = wMirage ? std::wstring(L"Mirando tu pantalla…") : std::wstring(L"Habla: lo que digas aparece aquí.");
+                    if (response.size() > 260) // the card shows the tail of a dictation, the head of what Mirage saw
+                        response = wMirage ? response.substr(0, 259) + L"…" : L"…" + response.substr(response.size() - 259);
+                } else {
                     std::lock_guard<std::mutex> lock(ai.aiMutex);
                     response = ai.lastResponse;
                 }
