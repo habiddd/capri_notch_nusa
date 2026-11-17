@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <commdlg.h>
 #include <gdiplus.h>
+#include <oleacc.h>
 #include <algorithm>
 #include <functional>
 #include <string>
@@ -27,12 +28,13 @@ struct SettingsHooks {
 
 class SettingsWindow {
 public:
-    enum Section { SEC_GENERAL, SEC_PILL, SEC_MUSIC, SEC_POMODORO, SEC_CALENDAR, SEC_ACCOUNTS, SEC_WEATHER, SEC_SYSTEM, SEC_PERF, SEC_AI, SEC_ABOUT, SEC_COUNT };
+    enum Section { SEC_GENERAL, SEC_PILL, SEC_POMODORO, SEC_CALENDAR, SEC_ACCOUNTS, SEC_WEATHER, SEC_SYSTEM, SEC_PERF, SEC_AI, SEC_ABOUT, SEC_COUNT };
 
     // The tab gear opens the section of its tab
-    static int SectionOfTab(int tab) { static const int s[] = { SEC_MUSIC, SEC_POMODORO, SEC_CALENDAR, SEC_AI, SEC_WEATHER, SEC_SYSTEM, SEC_GENERAL }; return s[tab]; }
+    static int SectionOfTab(int tab) { static const int s[] = { SEC_PILL, SEC_POMODORO, SEC_CALENDAR, SEC_AI, SEC_WEATHER, SEC_SYSTEM, SEC_GENERAL }; return s[tab]; }
 
     static void Open(HWND notch, int section, SyncAccount* google, SyncAccount* outlook, SyncAccount* ics, const SettingsHooks& h) {
+        CommitFocus(); // a field still being typed is saved before the old hooks and accounts go
         notchWnd = notch;
         acc[1] = google;
         acc[2] = outlook;
@@ -42,6 +44,8 @@ public:
         scriptCopied = false;
         focus = -1;
         edit.clear();
+        fieldErr = -1;
+        fieldErrText.clear();
         scrollY = 0;
         SectionSet(section);
         if (wnd) {
@@ -103,7 +107,10 @@ public:
         case WM_MOUSEMOVE: Hover(h, (float)(short)LOWORD(l) / Scale(h), (float)(short)HIWORD(l) / Scale(h)); return 0;
         case WM_MOUSELEAVE: Hover(h, -1.0f, -1.0f); return 0;
         case WM_SETCURSOR:
-            if (LOWORD(l) == HTCLIENT && HitAt(hx, hy) >= 0) { SetCursor(LoadCursor(NULL, IDC_HAND)); return TRUE; }
+            if (LOWORD(l) == HTCLIENT && HitAt(hx, hy) >= 0) {
+                SetCursor(LoadCursor(NULL, hits[HitAt(hx, hy)].kind == HK_FIELD ? IDC_IBEAM : IDC_HAND));
+                return TRUE;
+            }
             break;
         case WM_LBUTTONDOWN: Click((float)(short)LOWORD(l) / Scale(h), (float)(short)HIWORD(l) / Scale(h)); return 0;
         case WM_MOUSEWHEEL: {
@@ -113,9 +120,16 @@ public:
             return 0;
         }
         case WM_CHAR: Key((wchar_t)w); return 0;
+        case WM_GETOBJECT: // screen readers ask for the client area; its children are the painted controls
+            if ((LONG)l == (LONG)OBJID_CLIENT) {
+                if (!accObj) accObj = new Accessible(h);
+                return LresultFromObject(IID_IAccessible, w, accObj);
+            }
+            break;
         case WM_DESTROY:
             KillTimer(h, 1);
             CommitFocus();
+            if (accObj) { accObj->Release(); accObj = nullptr; }
             wnd = NULL;
             return 0;
         }
@@ -125,7 +139,7 @@ public:
 private:
     // Layout in logical px (the window is scaled by DPI). Rows scroll inside [TOP, BOTTOM).
     static constexpr float W = 780, H = 540, SIDE = 200, CX = 232, CR = 756, TOP = 84, BOTTOM = 524, ROW = 56;
-    static constexpr float SIDE_TOP = 40.0f, SIDE_STEP = 44.0f; // sidebar rows: 11 of them, so they start above the content's TOP
+    static constexpr float SIDE_TOP = 40.0f, SIDE_STEP = 44.0f; // sidebar rows: 10 of them, so they start above the content's TOP
 
     // Controls: what a row is, by id
     enum Id { ID_START, ID_HOVER_OPEN, ID_HOVER_MS, ID_LEAVE_MS, ID_TUCK, ID_FULLSCREEN, ID_EYES, ID_SLEEP, ID_EQUALIZER,
@@ -138,7 +152,7 @@ private:
     enum BtnId { B_MONITOR, B_CLEAR_KEY, B_DATA, B_QUIT, B_GUIDE, B_COPY_SCRIPT, B_WHISTLE, B_GLOW_COLOR, B_ACC_CONNECT, B_ACC_DISCONNECT, B_ACC_SYNC };
     enum HitKind { HK_SECTION, HK_BOOL, HK_STEP, HK_CHIP, HK_FIELD, HK_BUTTON };
 
-    struct Hit { Gdiplus::RectF r; int kind, a, b; };
+    struct Hit { Gdiplus::RectF r; int kind, a, b; std::wstring name; bool on = false, shown = true; };
     struct Num { int* v; int lo, hi, step; const wchar_t* unit; };
     struct Choice { std::vector<std::wstring> labels; std::vector<int> values; };
 
@@ -147,6 +161,8 @@ private:
     static inline float scrollY = 0, contentH = 0;
     static inline int focus = -1; // field being typed in, -1 none
     static inline std::wstring edit;
+    static inline int fieldErr = -1; // field whose last value was refused, -1 none
+    static inline std::wstring fieldErrText;
     static inline std::vector<Hit> hits;
     static inline std::vector<int> fieldOrder;
     static inline SyncAccount* acc[4] = { nullptr, nullptr, nullptr, nullptr }; // 1 Google, 2 Outlook, 3 calendar link
@@ -180,7 +196,7 @@ private:
     static void Invalidate() { if (wnd) InvalidateRect(wnd, NULL, FALSE); }
 
     static int HitAt(float x, float y) {
-        for (size_t i = hits.size(); i-- > 0;) if (hits[i].r.Contains(x, y)) return (int)i;
+        for (size_t i = hits.size(); i-- > 0;) if (hits[i].shown && hits[i].r.Contains(x, y)) return (int)i; // a scrolled-out control is not under the pointer
         return -1;
     }
 
@@ -296,7 +312,7 @@ private:
         switch (f) {
         case F_HOST: return s.aiHost;
         case F_PATH: return s.aiPath;
-        case F_MODEL: return AiPreset(s).model; // the model in use, so an empty field shows the provider's
+        case F_MODEL: return s.aiModel;
         case F_PORT: return std::to_wstring(s.aiPort);
         case F_G_URL: return acc[1]->bridgeUrl;
         case F_ICS: return acc[3]->link;
@@ -317,16 +333,23 @@ private:
 
     static void CommitField(int f, const std::wstring& v) {
         Settings& s = g_settings;
+        const wchar_t* err = NULL; // a refused value keeps the old one and says why
         switch (f) {
-        case F_HOST: if (!v.empty()) s.aiHost = v; break;
-        case F_PATH: if (!v.empty()) s.aiPath = v; break;
+        case F_HOST: if (v.empty()) err = L"El servidor no puede quedar vacío"; else s.aiHost = v; break;
+        case F_PATH: if (v.empty()) err = L"La ruta no puede quedar vacía"; else s.aiPath = v; break;
         case F_MODEL: s.aiModel = v; break;
         case F_WCITY: s.weatherCityName = TrimWs(v); break; // empty = the place is found automatically
-        case F_PORT: { int p; if (ParseIntW(v, p) && p >= 1 && p <= 65535) s.aiPort = p; break; }
+        case F_PORT: { int p; if (ParseIntW(v, p) && p >= 1 && p <= 65535) s.aiPort = p; else err = L"Escribe un puerto entre 1 y 65535"; break; }
         case F_KEY: if (!v.empty()) hooks.setKey(v); return Invalidate(); // the key lives in DPAPI, not in the ini
         case F_G_URL: if (!acc[1]->connected) acc[1]->bridgeUrl = v; return Invalidate(); // checked and saved by Conectar
         case F_ICS: if (!acc[3]->connected) acc[3]->link = v; return Invalidate();         // checked and saved by Conectar
         case F_MS_ID: return WriteSyncKey(L"microsoft_client_id", v);
+        }
+        if (err) {
+            fieldErr = f;
+            fieldErrText = err;
+        } else if (fieldErr == f) {
+            fieldErr = -1;
         }
         Changed();
     }
@@ -338,12 +361,14 @@ private:
         std::wstring v = edit;
         focus = -1;
         edit.clear();
+        if (f != F_KEY && v == FieldText(f)) { Invalidate(); return; } // passed over unchanged: nothing to save
         CommitField(f, v);
         Invalidate();
     }
 
     static void Focus(int f) {
         CommitFocus();
+        if (f == fieldErr) fieldErr = -1; // the user is fixing it
         focus = f;
         edit = f == F_KEY ? L"" : FieldText(f); // the key is typed fresh, never read back
         Invalidate();
@@ -374,8 +399,11 @@ private:
             if (edit.size() > maxLen) edit.resize(maxLen);
         } else if (ch == 8) {
             if (!edit.empty()) edit.pop_back();
-        } else if (ch == 13 || ch == 27) { // Enter saves; Esc just leaves the field
+        } else if (ch == 13) { // Enter saves; Esc drops what was typed
             CommitFocus();
+        } else if (ch == 27) {
+            focus = -1;
+            edit.clear();
         } else if (ch == 9) { // Tab: the next field
             size_t i = 0;
             while (i < fieldOrder.size() && fieldOrder[i] != focus) ++i;
@@ -389,54 +417,63 @@ private:
 
     static void Click(float x, float y) {
         CommitFocus();
-        for (size_t i = hits.size(); i-- > 0;) {
-            const Hit& h = hits[i];
-            if (!h.r.Contains(x, y)) continue;
-            switch (h.kind) {
-            case HK_SECTION: SectionSet(h.a); break;
-            case HK_BOOL:
-                *BoolOf(h.a) = !*BoolOf(h.a);
-                toggleId = h.a;
-                toggleAt = GetTickCount64();
-                Changed();
-                Animate();
-                break;
-            case HK_STEP: {
-                Num n = NumOf(h.a);
-                *n.v = (std::max)(n.lo, (std::min)(n.hi, *n.v + h.b * n.step));
-                Changed();
-                break;
+        int i = HitAt(x, y); // the top-most control under the pointer wins
+        if (i < 0) return;
+        Hit h = hits[i]; // copied: Activate can change what the next paint builds
+        Activate(h);
+    }
+
+    static void Activate(const Hit& h) {
+        switch (h.kind) {
+        case HK_SECTION: SectionSet(h.a); break;
+        case HK_BOOL:
+            *BoolOf(h.a) = !*BoolOf(h.a);
+            toggleId = h.a;
+            toggleAt = GetTickCount64();
+            Changed();
+            Animate();
+            break;
+        case HK_STEP: {
+            Num n = NumOf(h.a);
+            *n.v = (std::max)(n.lo, (std::min)(n.hi, *n.v + h.b * n.step));
+            Changed();
+            break;
+        }
+        case HK_CHIP:
+            if (h.a == ID_CATEGORY) {
+                g_settings.defaultCategory = h.b;
+            } else if (h.a == ID_ALERT) { // h.b is one bit; Ninguno (0) clears them all
+                int mask = AlertMask(g_settings.defaultAlert, g_settings.defaultMoreAlerts);
+                SetAlertMask(h.b ? mask ^ h.b : 0, g_settings.defaultAlert, g_settings.defaultMoreAlerts);
+            } else {
+                if (h.a == ID_AI_PROVIDER && g_settings.aiProvider != h.b) g_settings.aiModel.clear(); // each provider has its own model
+                *ChoiceOf(h.a) = h.b;
             }
-            case HK_CHIP:
-                if (h.a == ID_CATEGORY) {
-                    g_settings.defaultCategory = h.b;
-                } else if (h.a == ID_ALERT) { // h.b is one bit; Ninguno (0) clears them all
-                    int mask = AlertMask(g_settings.defaultAlert, g_settings.defaultMoreAlerts);
-                    SetAlertMask(h.b ? mask ^ h.b : 0, g_settings.defaultAlert, g_settings.defaultMoreAlerts);
-                } else {
-                    if (h.a == ID_AI_PROVIDER && g_settings.aiProvider != h.b) g_settings.aiModel.clear(); // each provider has its own model
-                    *ChoiceOf(h.a) = h.b;
-                }
-                Changed();
-                break;
-            case HK_FIELD: Focus(h.a); break;
-            case HK_BUTTON: DoButton(h.a, h.b); break;
-            }
-            break; // the top-most control under the pointer wins
+            Changed();
+            break;
+        case HK_FIELD: Focus(h.a); break;
+        case HK_BUTTON: DoButton(h.a, h.b); break;
         }
     }
+
 
     static void DoButton(int b, int src) {
         switch (b) {
         case B_MONITOR: hooks.command(1); break;
-        case B_CLEAR_KEY: hooks.setKey(L""); Invalidate(); break;
+        case B_CLEAR_KEY:
+            if (Ask(L"¿Borrar la clave de API? Tendrás que pegarla de nuevo para usar la IA.")) hooks.setKey(L"");
+            Invalidate();
+            break;
         case B_DATA: ShellExecuteW(wnd, L"open", AppDataFile(L"").c_str(), NULL, NULL, SW_SHOWNORMAL); break; // shortcut: the files sit loose in %LOCALAPPDATA%, not in a folder of their own
-        case B_QUIT: hooks.command(2); break;
+        case B_QUIT:
+            if (Ask(L"¿Salir de Capri Notch? Para volver a abrirlo, usa el acceso directo del Escritorio.")) hooks.command(2);
+            break;
         case B_GUIDE: ShellExecuteW(wnd, L"open", ExeFile(L"README.md").c_str(), NULL, NULL, SW_SHOWNORMAL); break; // shortcut: the README sits next to the exe, a project folder build only
         case B_COPY_SCRIPT: CopyScript(); break;
         case B_WHISTLE: // src is the model. Installed: remove it (fails quietly while the notch is using it); else download it
             if (g_cactusDownload[src] == 1) break;
             if (CactusInstalled(src)) {
+                if (!Ask((L"¿Borrar " + std::wstring(src ? L"Mirage" : L"Whistle") + L"? Para usarlo otra vez hay que descargarlo de nuevo.").c_str())) break;
                 DeleteFileW(CactusModel(src).c_str());
                 if (!CactusInstalled(1 - src)) DeleteFileW(WhistleDll().c_str()); // the runtime goes with the last model
             } else {
@@ -462,9 +499,19 @@ private:
             if (dlg) FreeLibrary(dlg);
             break;
         }
-        default: hooks.account(src, b - B_ACC_CONNECT); break;
+        case B_ACC_DISCONNECT: // the question is the notch's, so this window is off meanwhile: no second click
+            if (wnd) EnableWindow(wnd, FALSE);
+            { auto run = hooks.account; run(src, 1); } // a copy: reopening from the tray during the question replaces hooks
+            if (wnd) { EnableWindow(wnd, TRUE); SetForegroundWindow(wnd); }
+            break;
+        default: { auto run = hooks.account; run(src, b - B_ACC_CONNECT); break; } // same: connect can ask too
         }
         if (b == B_ACC_CONNECT || b == B_ACC_DISCONNECT || b == B_ACC_SYNC) Invalidate();
+    }
+
+    // Destructive actions ask first; No is the default button
+    static bool Ask(const wchar_t* text) {
+        return MessageBoxW(wnd, text, L"Capri Notch", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
     }
 
     // The key is made once and reused, so a script copied before still matches. It is saved before the copy: a restart must
@@ -520,6 +567,132 @@ private:
         return a.account.empty() ? L"Conectado" : a.account;
     }
 
+    // Narrator and other screen readers: the painted controls as MSAA children; child id = index in hits + 1
+    struct Accessible : IAccessible {
+        LONG refs = 1;
+        IAccessible* sys = nullptr; // Windows' own object for the client area: parent, window name, location
+        explicit Accessible(HWND h) { CreateStdAccessibleObject(h, OBJID_CLIENT, IID_IAccessible, (void**)&sys); }
+        virtual ~Accessible() { if (sys) sys->Release(); }
+        static const Hit* Child(const VARIANT& v) {
+            if (!wnd || v.vt != VT_I4 || v.lVal < 1 || v.lVal > (LONG)hits.size()) return nullptr;
+            return &hits[v.lVal - 1];
+        }
+        static bool Self(const VARIANT& v) { return v.vt == VT_I4 && v.lVal == CHILDID_SELF; }
+        // IUnknown
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** p) override {
+            if (id == IID_IUnknown || id == IID_IDispatch || id == IID_IAccessible) { *p = static_cast<IAccessible*>(this); AddRef(); return S_OK; }
+            *p = nullptr;
+            return E_NOINTERFACE;
+        }
+        ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+        ULONG STDMETHODCALLTYPE Release() override { LONG r = InterlockedDecrement(&refs); if (!r) delete this; return r; }
+        // IDispatch: screen readers do not use it
+        HRESULT STDMETHODCALLTYPE GetTypeInfoCount(UINT* n) override { *n = 0; return S_OK; }
+        HRESULT STDMETHODCALLTYPE GetTypeInfo(UINT, LCID, ITypeInfo**) override { return E_NOTIMPL; }
+        HRESULT STDMETHODCALLTYPE GetIDsOfNames(REFIID, LPOLESTR*, UINT, LCID, DISPID*) override { return E_NOTIMPL; }
+        HRESULT STDMETHODCALLTYPE Invoke(DISPID, REFIID, LCID, WORD, DISPPARAMS*, VARIANT*, EXCEPINFO*, UINT*) override { return E_NOTIMPL; }
+        // IAccessible
+        HRESULT STDMETHODCALLTYPE get_accParent(IDispatch** p) override { *p = nullptr; return sys ? sys->get_accParent(p) : S_FALSE; }
+        HRESULT STDMETHODCALLTYPE get_accChildCount(long* n) override { *n = wnd ? (long)hits.size() : 0; return S_OK; }
+        HRESULT STDMETHODCALLTYPE get_accChild(VARIANT, IDispatch** p) override { *p = nullptr; return S_FALSE; } // simple elements
+        HRESULT STDMETHODCALLTYPE get_accName(VARIANT v, BSTR* s) override {
+            *s = nullptr;
+            if (Self(v)) return sys ? sys->get_accName(v, s) : S_FALSE;
+            const Hit* h = Child(v);
+            if (!h) return E_INVALIDARG;
+            *s = SysAllocString(h->name.c_str());
+            return S_OK;
+        }
+        HRESULT STDMETHODCALLTYPE get_accValue(VARIANT v, BSTR* s) override {
+            *s = nullptr;
+            const Hit* h = Child(v);
+            if (!h || h->kind != HK_FIELD || h->a == F_KEY) return S_FALSE; // the API key is never read out
+            *s = SysAllocString((focus == h->a ? edit : FieldText(h->a)).c_str());
+            return S_OK;
+        }
+        HRESULT STDMETHODCALLTYPE get_accDescription(VARIANT, BSTR* s) override { *s = nullptr; return S_FALSE; }
+        HRESULT STDMETHODCALLTYPE get_accRole(VARIANT v, VARIANT* r) override {
+            if (Self(v)) return sys ? sys->get_accRole(v, r) : S_FALSE;
+            const Hit* h = Child(v);
+            if (!h) return E_INVALIDARG;
+            static const long roles[] = { ROLE_SYSTEM_PAGETAB, ROLE_SYSTEM_CHECKBUTTON, ROLE_SYSTEM_PUSHBUTTON, ROLE_SYSTEM_RADIOBUTTON, ROLE_SYSTEM_TEXT, ROLE_SYSTEM_PUSHBUTTON }; // by HitKind
+            r->vt = VT_I4;
+            r->lVal = h->kind == HK_CHIP && h->a == ID_ALERT ? ROLE_SYSTEM_CHECKBUTTON : roles[h->kind]; // alert chips are several, so checks
+            return S_OK;
+        }
+        HRESULT STDMETHODCALLTYPE get_accState(VARIANT v, VARIANT* r) override {
+            if (Self(v)) return sys ? sys->get_accState(v, r) : S_FALSE;
+            const Hit* h = Child(v);
+            if (!h) return E_INVALIDARG;
+            long st = STATE_SYSTEM_FOCUSABLE;
+            if (h->kind == HK_FIELD && h->a == focus && GetFocus() == wnd) st |= STATE_SYSTEM_FOCUSED; // the field being typed in
+            if (h->on) st |= h->kind == HK_SECTION ? STATE_SYSTEM_SELECTED : STATE_SYSTEM_CHECKED;
+            if (h->kind == HK_SECTION) st |= STATE_SYSTEM_SELECTABLE;
+            if (!h->shown) st |= STATE_SYSTEM_OFFSCREEN;
+            r->vt = VT_I4;
+            r->lVal = st;
+            return S_OK;
+        }
+        HRESULT STDMETHODCALLTYPE get_accHelp(VARIANT, BSTR* s) override { *s = nullptr; return S_FALSE; }
+        HRESULT STDMETHODCALLTYPE get_accHelpTopic(BSTR* f, VARIANT, long* t) override { *f = nullptr; *t = 0; return S_FALSE; }
+        HRESULT STDMETHODCALLTYPE get_accKeyboardShortcut(VARIANT, BSTR* s) override { *s = nullptr; return S_FALSE; }
+        HRESULT STDMETHODCALLTYPE get_accFocus(VARIANT* r) override {
+            int i = -1;
+            for (size_t j = 0; j < hits.size() && focus >= 0; ++j) if (hits[j].kind == HK_FIELD && hits[j].a == focus) { i = (int)j; break; }
+            if (!wnd || GetFocus() != wnd) { r->vt = VT_EMPTY; return S_FALSE; }
+            r->vt = VT_I4;
+            r->lVal = i >= 0 ? i + 1 : CHILDID_SELF;
+            return S_OK;
+        }
+        HRESULT STDMETHODCALLTYPE get_accSelection(VARIANT* r) override { r->vt = VT_EMPTY; return S_FALSE; }
+        HRESULT STDMETHODCALLTYPE get_accDefaultAction(VARIANT v, BSTR* s) override {
+            *s = nullptr;
+            const Hit* h = Child(v);
+            if (!h) return S_FALSE;
+            *s = SysAllocString(h->kind == HK_FIELD ? L"Editar" : L"Pulsar");
+            return S_OK;
+        }
+        HRESULT STDMETHODCALLTYPE accSelect(long, VARIANT) override { return E_NOTIMPL; }
+        HRESULT STDMETHODCALLTYPE accLocation(long* x, long* y, long* w, long* h, VARIANT v) override {
+            if (Self(v)) return sys ? sys->accLocation(x, y, w, h, v) : S_FALSE;
+            const Hit* c = Child(v);
+            if (!c) return E_INVALIDARG;
+            float s = Scale(wnd);
+            POINT p = { (LONG)(c->r.X * s), (LONG)(c->r.Y * s) };
+            ClientToScreen(wnd, &p);
+            *x = p.x; *y = p.y; *w = (long)(c->r.Width * s); *h = (long)(c->r.Height * s);
+            return S_OK;
+        }
+        HRESULT STDMETHODCALLTYPE accNavigate(long dir, VARIANT start, VARIANT* end) override {
+            if (Self(start) && sys) return sys->accNavigate(dir, start, end);
+            end->vt = VT_EMPTY;
+            return S_FALSE;
+        }
+        HRESULT STDMETHODCALLTYPE accHitTest(long x, long y, VARIANT* r) override {
+            if (!wnd) { r->vt = VT_EMPTY; return S_FALSE; }
+            POINT p = { x, y };
+            ScreenToClient(wnd, &p);
+            float s = Scale(wnd);
+            int i = HitAt(p.x / s, p.y / s);
+            RECT rc;
+            GetClientRect(wnd, &rc);
+            if (i < 0 && !PtInRect(&rc, p)) { r->vt = VT_EMPTY; return S_FALSE; }
+            r->vt = VT_I4;
+            r->lVal = i >= 0 ? i + 1 : CHILDID_SELF;
+            return S_OK;
+        }
+        HRESULT STDMETHODCALLTYPE accDoDefaultAction(VARIANT v) override {
+            const Hit* c = Child(v);
+            if (!c) return E_INVALIDARG;
+            Hit h = *c; // Activate can change what the next paint builds
+            Activate(h);
+            return S_OK;
+        }
+        HRESULT STDMETHODCALLTYPE put_accName(VARIANT, BSTR) override { return E_NOTIMPL; }
+        HRESULT STDMETHODCALLTYPE put_accValue(VARIANT, BSTR) override { return E_NOTIMPL; }
+    };
+    static inline Accessible* accObj = nullptr;
+
     static void Paint(HDC dc, float s) {
         using namespace Gdiplus;
         Bitmap bmp((INT)(W * s), (INT)(H * s), PixelFormat32bppARGB);
@@ -540,19 +713,23 @@ private:
         Font fDesc(&fam, 7.5f, FontStyleRegular, UnitPoint);
         Font fIcon(&icons, 11.0f, FontStyleRegular, UnitPoint);
         Font fIconSmall(&icons, 8.0f, FontStyleRegular, UnitPoint);
+        Font fHead(&fam, 9.0f, FontStyleBold, UnitPoint);
         LinearGradientBrush side(RectF(0.0f, 0.0f, SIDE, H), Color(255, 22, 23, 29), Color(255, 16, 17, 21), LinearGradientModeVertical);
         SolidBrush surface(Color(255, 22, 23, 27)), chip(Color(255, 44, 46, 52));
         SolidBrush sideHot(Color(255, 28, 30, 36)), chipHot(Color(255, 69, 71, 76)); // hovered row; chip 12 % lighter
         SolidBrush accentB(ACCENT);
-        SolidBrush textWhite(Color(255, 242, 242, 245)), textDim(Color(255, 142, 145, 152)), ink(Color(255, 8, 9, 12));
-        SolidBrush todayFill(Color(255, 245, 245, 247)), green(Color(255, 74, 222, 128)), amber(Color(255, 251, 191, 36));
-        SolidBrush red(Color(255, 239, 68, 68)), grey(Color(255, 90, 92, 98));
+        SolidBrush textWhite(Color(255, 242, 242, 245)), textDim(Color(255, 142, 145, 152)), dangerText(Color(255, 248, 113, 113));
+        SolidBrush tabWell(Color(255, 34, 37, 48));
+        SolidBrush green(Color(255, 74, 222, 128)), amber(Color(255, 251, 191, 36));
+        SolidBrush red(Color(255, 239, 68, 68));
         Pen surfaceEdge(Color(26, 255, 255, 255), 1.0f), divider(Color(255, 48, 49, 55), 1.0f), selRing(Color(150, 255, 255, 255), 1.2f);
-        Pen focusEdge(ACCENT, 1.0f);
-        StringFormat center, leftMid;
+        Pen focusEdge(ACCENT, 1.0f), fieldEdge(Color(46, 255, 255, 255), 1.0f), errEdge(Color(255, 248, 113, 113), 1.0f);
+        Pen selEdge(Color(160, 124, 156, 255), 1.0f);
+        StringFormat center, leftMid, rightMid;
         center.SetAlignment(StringAlignmentCenter);
         leftMid.SetAlignment(StringAlignmentNear);
-        for (StringFormat* f : { &center, &leftMid }) {
+        rightMid.SetAlignment(StringAlignmentFar);
+        for (StringFormat* f : { &center, &leftMid, &rightMid }) {
             f->SetLineAlignment(StringAlignmentCenter);
             f->SetTrimming(StringTrimmingEllipsisCharacter);
             f->SetFormatFlags(StringFormatFlagsNoWrap);
@@ -568,14 +745,18 @@ private:
             RoundPath(p, x, y, w, h, r);
             g.FillPath(b, &p);
         };
-        auto hit = [&](RectF r, int kind, int a, int b = 0) { // content hits only where the row is on screen
-            if (r.Y + r.Height > TOP && r.Y < BOTTOM) hits.push_back({ r, kind, a, b });
+        bool off = false; // the row is switched off by its parent: shown dimmed, no hits
+        std::wstring rowName; // the row being painted: its name leads every hit's name
+        auto hit = [&](RectF r, int kind, int a, int b = 0, const std::wstring& label = L"", bool on = false) {
+            if (off) return;
+            // a scrolled-out hit stays in the list (screen readers see it as offscreen); HitAt skips it
+            hits.push_back({ r, kind, a, b, label.empty() ? rowName : rowName + L": " + label, on, r.Y + r.Height > TOP && r.Y < BOTTOM });
         };
         auto hot = [&](const RectF& r) { return r.Contains(hx, hy) != FALSE; };
 
         // Sidebar: icon and name per section; the active one sits on a chip
-        static const wchar_t* secIcon[] = { L"", L"", L"", L"", L"", L"", L"\uE706", L"\uE950", L"\uEC4A", L"", L"" };
-        static const wchar_t* secName[] = { L"General", L"Píldora", L"Música", L"Pomodoro", L"Calendario", L"Cuentas", L"Clima", L"Sistema", L"Rendimiento", L"IA", L"Acerca de" };
+        static const wchar_t* secIcon[] = { L"", L"", L"", L"", L"", L"\uE706", L"\uE950", L"\uEC4A", L"", L"" };
+        static const wchar_t* secName[] = { L"General", L"Píldora", L"Pomodoro", L"Calendario", L"Cuentas", L"Clima", L"Sistema", L"Rendimiento", L"IA", L"Acerca de" };
         fillRound(&chip, 12.0f, ChipY(), 176.0f, 36.0f, 9.0f); // slides from the old section to the new one
         fillRound(&accentB, 12.0f, ChipY() + 9.0f, 3.0f, 18.0f, 1.5f); // accent bar on the chip's left edge
         for (int i = 0; i < SEC_COUNT; ++i) {
@@ -584,12 +765,13 @@ private:
             if (!on && hot(RectF(12.0f, y, 176.0f, 36.0f))) fillRound(&sideHot, 12.0f, y, 176.0f, 36.0f, 9.0f);
             g.DrawString(secIcon[i], -1, &fIcon, RectF(22.0f, y, 24.0f, 36.0f), &center, on ? &accentB : &textDim);
             g.DrawString(secName[i], -1, &fBody, RectF(50.0f, y, 140.0f, 36.0f), &leftMid, on ? &textWhite : &textDim);
-            hits.push_back({ RectF(12.0f, y, 176.0f, 36.0f), HK_SECTION, i, 0 });
+            hits.push_back({ RectF(12.0f, y, 176.0f, 36.0f), HK_SECTION, i, 0, secName[i], on, true });
         }
 
         g.DrawString(secName[section], -1, &fTitle, RectF(CX, 24.0f, 520.0f, 32.0f), &leftMid, &textWhite);
 
         // Row helpers. ry is the top of the current row; controls sit in its middle band.
+        scrollY = (std::min)(scrollY, (std::max)(0.0f, contentH - (BOTTOM - TOP))); // a section that got shorter stops at its end
         float ry = TOP - scrollY;
         float top0 = ry;
         g.SetClip(RectF(CX - 8.0f, TOP, CR - CX + 16.0f, BOTTOM - TOP));
@@ -597,11 +779,23 @@ private:
         GraphicsState content = g.Save();
         g.TranslateTransform(0.0f, 12.0f * (1.0f - ease)); // the new section rises 12 px into place
         auto row = [&](const std::wstring& name, const std::wstring& desc, float descW = 300.0f) {
+            rowName = name;
             g.DrawString(name.c_str(), -1, &fBody, RectF(CX, ry + 9.0f, descW, 20.0f), &leftMid, &textWhite);
             g.DrawString(desc.c_str(), -1, &fDesc, RectF(CX, ry + 29.0f, descW, 16.0f), &leftMid, &textDim);
             g.DrawLine(&divider, CX, ry + ROW - 1.0f, CR, ry + ROW - 1.0f);
         };
-        auto next = [&] { ry += ROW; };
+        auto next = [&] {
+            if (off) { SolidBrush veil(Color(150, 14, 15, 18)); g.FillRectangle(&veil, CX - 8.0f, ry, CR - CX + 16.0f, ROW - 1.0f); } // switched off by its parent: dimmed, not clickable
+            ry += ROW;
+        };
+        auto header = [&](const wchar_t* text) { // group title inside a section: more space above than below
+            g.DrawString(text, -1, &fHead, RectF(CX, ry + 14.0f, CR - CX, 18.0f), &leftMid, &textDim);
+            ry += 36.0f;
+        };
+        auto note = [&](const std::wstring& text) { // helper text: not a setting, so no row, no divider
+            g.DrawString(text.c_str(), -1, &fDesc, RectF(CX, ry + 4.0f, CR - CX, 16.0f), &leftMid, &textDim);
+            ry += 28.0f;
+        };
         auto toggle = [&](int id) {
             bool on = *BoolOf(id);
             float t = on ? 1.0f : 0.0f; // 0 off, 1 on; only the last clicked toggle is mid-way
@@ -609,9 +803,13 @@ private:
             float x = CR - 40.0f, y = ry + 17.0f;
             SolidBrush track(Mix(Color(255, 44, 46, 52), ACCENT, t));
             fillRound(&track, x, y, 40.0f, 22.0f, 11.0f);
+            Pen trackEdge(Color((BYTE)(60 * (1 - t)), 255, 255, 255), 1.0f); // the off track stays visible on the background
+            GraphicsPath tp;
+            RoundPath(tp, x, y, 40.0f, 22.0f, 11.0f);
+            g.DrawPath(&trackEdge, &tp);
             SolidBrush knob(Mix(Color(255, 142, 145, 152), Color(255, 255, 255, 255), t));
             g.FillEllipse(&knob, x + 3.0f + 18.0f * t, y + 3.0f, 16.0f, 16.0f);
-            hit(RectF(x, y, 40.0f, 22.0f), HK_BOOL, id);
+            hit(RectF(CX, ry, CR - CX, ROW - 1.0f), HK_BOOL, id, 0, L"", on); // the whole row flips it: the toggle is its only control
         };
         auto stepper = [&](int id) {
             Num n = NumOf(id);
@@ -620,8 +818,8 @@ private:
             g.DrawString(L"", -1, &fIconSmall, RectF(x, y, 30.0f, 26.0f), &center, hot(RectF(x, y, 30.0f, 26.0f)) ? &accentB : &textWhite);
             g.DrawString(L"", -1, &fIconSmall, RectF(x + 94.0f, y, 30.0f, 26.0f), &center, hot(RectF(x + 94.0f, y, 30.0f, 26.0f)) ? &accentB : &textWhite);
             g.DrawString((std::to_wstring(*n.v) + n.unit).c_str(), -1, &fSmall, RectF(x + 30.0f, y, 64.0f, 26.0f), &center, &textWhite);
-            hit(RectF(x, y, 30.0f, 26.0f), HK_STEP, id, -1);
-            hit(RectF(x + 94.0f, y, 30.0f, 26.0f), HK_STEP, id, 1);
+            hit(RectF(x, y, 30.0f, 26.0f), HK_STEP, id, -1, std::to_wstring(*n.v) + n.unit + L", bajar");
+            hit(RectF(x + 94.0f, y, 30.0f, 26.0f), HK_STEP, id, 1, std::to_wstring(*n.v) + n.unit + L", subir");
         };
         auto chips = [&](int id) {
             Choice c = ChoicesOf(id);
@@ -639,9 +837,14 @@ private:
             float x = CR - total, y = ry + 15.0f;
             for (size_t i = 0; i < c.labels.size(); ++i) {
                 bool on = alerts ? (c.values[i] ? (mask & c.values[i]) != 0 : mask == 0) : cur == c.values[i];
-                fillRound(on ? (Brush*)&todayFill : hot(RectF(x, y, w[i], 26.0f)) ? (Brush*)&chipHot : (Brush*)&chip, x, y, w[i], 26.0f, 8.0f);
-                g.DrawString(c.labels[i].c_str(), -1, &fSmall, RectF(x, y, w[i], 26.0f), &center, on ? &ink : &textWhite);
-                hit(RectF(x, y, w[i], 26.0f), HK_CHIP, id, c.values[i]);
+                fillRound(on ? (Brush*)&tabWell : hot(RectF(x, y, w[i], 26.0f)) ? (Brush*)&chipHot : (Brush*)&chip, x, y, w[i], 26.0f, 8.0f);
+                if (on) { // the selected chip is marked by its hairline, not by a bright fill
+                    GraphicsPath p;
+                    RoundPath(p, x, y, w[i], 26.0f, 8.0f);
+                    g.DrawPath(&selEdge, &p);
+                }
+                g.DrawString(c.labels[i].c_str(), -1, &fSmall, RectF(x, y, w[i], 26.0f), &center, on ? &accentB : &textWhite);
+                hit(RectF(x, y, w[i], 26.0f), HK_CHIP, id, c.values[i], c.labels[i], on);
                 x += w[i] + 6.0f;
             }
         };
@@ -652,7 +855,7 @@ private:
                 SolidBrush c(Color(255, CAL_CATS[i].r, CAL_CATS[i].g, CAL_CATS[i].b));
                 g.FillEllipse(&c, cx - 6.0f, cy - 6.0f, 12.0f, 12.0f);
                 if (i == cur) g.DrawEllipse(&selRing, cx - 9.0f, cy - 9.0f, 18.0f, 18.0f);
-                hit(RectF(cx - 12.0f, ry + 16.0f, 24.0f, 24.0f), HK_CHIP, id, i);
+                hit(RectF(cx - 12.0f, ry + 16.0f, 24.0f, 24.0f), HK_CHIP, id, i, CAL_CATS[i].name, i == cur);
             }
         };
         auto field = [&](int f, float x, float w) {
@@ -668,33 +871,37 @@ private:
                 placeholder = !hasKey;
             } else {
                 shown = FieldText(f);
-                if (shown.empty()) { shown = L"Sin definir"; placeholder = true; }
+                if (shown.empty()) { // the dim text says what an empty field means
+                    shown = f == F_MODEL ? AiPreset(st).model : f == F_WCITY ? L"Automática" : L"Sin definir";
+                    placeholder = true;
+                }
             }
             GraphicsPath p;
             RoundPath(p, x, y, w, 26.0f, 8.0f);
             g.FillPath(&surface, &p);
-            g.DrawPath(on ? &focusEdge : &surfaceEdge, &p);
+            const bool bad = fieldErr == f && !on;
+            g.DrawPath(on ? &focusEdge : bad ? &errEdge : &fieldEdge, &p);
             g.DrawString(shown.c_str(), -1, &fSmall, RectF(x + 10.0f, y, w - 20.0f, 26.0f), &leftMid, placeholder ? &textDim : &textWhite);
+            if (bad) g.DrawString(fieldErrText.c_str(), -1, &fDesc, RectF(x + w - 320.0f, y + 27.0f, 320.0f, 14.0f), &rightMid, &dangerText);
             hit(RectF(x, y, w, 26.0f), HK_FIELD, f);
             fieldOrder.push_back(f);
         };
-        auto button = [&](float x, int id, int b, float w, const wchar_t* text) {
+        auto button = [&](float x, int id, int b, float w, const wchar_t* text, bool danger = false) {
             fillRound(hot(RectF(x, ry + 15.0f, w, 26.0f)) ? (Brush*)&chipHot : (Brush*)&chip, x, ry + 15.0f, w, 26.0f, 8.0f);
-            g.DrawString(text, -1, &fSmall, RectF(x, ry + 15.0f, w, 26.0f), &center, &textWhite);
-            hit(RectF(x, ry + 15.0f, w, 26.0f), HK_BUTTON, id, b);
+            g.DrawString(text, -1, &fSmall, RectF(x, ry + 15.0f, w, 26.0f), &center, danger ? &dangerText : &textWhite);
+            hit(RectF(x, ry + 15.0f, w, 26.0f), HK_BUTTON, id, b, text);
         };
         auto account = [&](int src, const wchar_t* name) {
+            rowName = name;
             SyncAccount& a = *acc[src];
-            SolidBrush& c = a.syncing ? amber : !a.connected ? grey : !a.error.empty() ? red : green;
+            SolidBrush& c = a.syncing ? amber : !a.error.empty() ? red : !a.connected ? textDim : green;
             g.FillEllipse(&c, CX + 4.0f, ry + 24.0f, 8.0f, 8.0f);
-            g.DrawString(name, -1, &fBody, RectF(CX + 18.0f, ry + 9.0f, 220.0f, 20.0f), &leftMid, &textWhite);
-            g.DrawString(Status(a).c_str(), -1, &fDesc, RectF(CX + 18.0f, ry + 29.0f, 220.0f, 16.0f), &leftMid, &textDim);
+            g.DrawString(name, -1, &fBody, RectF(CX + 18.0f, ry + 9.0f, CR - 216.0f - (CX + 18.0f), 20.0f), &leftMid, &textWhite);
+            g.DrawString(Status(a).c_str(), -1, &fDesc, RectF(CX + 18.0f, ry + 29.0f, CR - 216.0f - (CX + 18.0f), 16.0f), &leftMid, &textDim);
             g.DrawLine(&divider, CX, ry + ROW - 1.0f, CR, ry + ROW - 1.0f);
-            if (!a.connected) {
-                if (src == 2) button(CR - 100.0f, B_ACC_CONNECT, src, 100.0f, L"Conectar"); // Google connects from its URL row
-            } else {
-                button(CR - 100.0f, B_ACC_DISCONNECT, src, 100.0f, L"Desconectar");
-                button(CR - 208.0f, B_ACC_SYNC, src, 100.0f, L"Sincronizar");
+            if (a.connected) { // connecting is done by the row under the name (URL, ID or link), not here
+                button(CR - 208.0f, B_ACC_DISCONNECT, src, 100.0f, L"Desconectar", true);
+                button(CR - 100.0f, B_ACC_SYNC, src, 100.0f, L"Sincronizar");
             }
         };
 
@@ -709,29 +916,46 @@ private:
             row(L"Monitor", L"Muestra la píldora en la siguiente pantalla"); button(CR - 170.0f, B_MONITOR, 0, 170.0f, L"Mover al otro monitor"); next();
             row(L"Archivos: miniaturas", L"Vista previa junto al nombre en el modo guardar"); toggle(ID_SHELF_THUMBS); next();
             break;
-        case SEC_PILL:
+        case SEC_PILL: {
+            // Everything the collapsed pill can show, grouped by the tab that feeds it
+            header(L"En reposo");
             row(L"Dormir tras", L"Cierra los ojos tras estos minutos sin usar el equipo"); stepper(ID_SLEEP); next();
-            row(L"Aviso del cargador", L"Aviso al enchufar o desenchufar"); toggle(ID_CHARGER); next();
+            row(L"Ojos", L"Mascota que parpadea en reposo; sin ojos, un calendario"); toggle(ID_EYES); next();
+            header(L"Con música");
             row(L"Letra en la píldora", L"La línea que suena, si las letras están activas"); toggle(ID_LYRICS); next();
+            row(L"Carátula", L"La portada del disco a la izquierda"); toggle(ID_PILL_ART); next();
+            row(L"Artista", L"Título · artista en vez de solo el título"); toggle(ID_PILL_ARTIST); next();
+            row(L"Ecualizador", L"Barras animadas en la píldora mientras suena música"); toggle(ID_EQUALIZER); next();
+            note(L"Letras de LRCLIB: gratis y sin cuenta. Se activan con el botón de la pestaña Música.");
+            header(L"Con Pomodoro");
+            row(L"Verlo parado", L"El temporizador en la píldora aunque no corra"); toggle(ID_PILL_POMO_IDLE); next();
+            row(L"Barra de progreso", L"Línea roja bajo la píldora"); toggle(ID_PILL_POMO_BAR); next();
+            row(L"Sesiones", L"Añade las sesiones completadas hoy"); toggle(ID_PILL_POMO_SESSIONS); next();
+            header(L"Con Sistema");
+            row(L"Vista compacta", L"Las cifras en la píldora, con la pestaña Sistema elegida"); toggle(ID_PILL_SYS); next();
+            off = !st.pillSys;
+            row(L"CPU", L"Uso y, con Temperaturas, sus grados"); toggle(ID_PILL_SYS_CPU); next();
+            off = !st.pillSys || !st.sysTemps;
+            row(L"GPU", st.sysTemps ? L"Temperatura de la gráfica" : L"Necesita Temperaturas, en Sistema"); toggle(ID_PILL_SYS_GPU); next();
+            off = !st.pillSys;
+            row(L"Memoria", L"Porcentaje de RAM en uso"); toggle(ID_PILL_SYS_RAM); next();
+            row(L"Disco", L"Espacio libre en C:"); toggle(ID_PILL_SYS_DISK); next();
+            row(L"Batería", L"A la derecha: vatios, o el porcentaje si no hay dato"); toggle(ID_PILL_SYS_POWER); next();
+            off = false;
+            header(L"Avisos");
+            row(L"Aviso del cargador", L"Aviso al enchufar o desenchufar"); toggle(ID_CHARGER); next();
             break;
-        case SEC_MUSIC:
-            row(L"Letra en la píldora", L"Igual que en Píldora"); toggle(ID_LYRICS); next();
-            row(L"Compacta: carátula", L"La portada del disco a la izquierda"); toggle(ID_PILL_ART); next();
-            row(L"Compacta: artista", L"Título · artista en vez de solo el título"); toggle(ID_PILL_ARTIST); next();
-            row(L"Letras", L"LRCLIB: gratis, sin cuenta. Actívalas con el botón de la pestaña Música."); next();
-            break;
+        }
         case SEC_POMODORO:
             row(L"Enfoque", L"Duración de cada sesión de trabajo"); stepper(ID_FOCUS); next();
             row(L"Descanso", L"Duración de cada pausa"); stepper(ID_BREAK); next();
             row(L"Sonido al terminar", L"Pitido al cambiar de fase"); toggle(ID_POMO_SOUND); next();
-            row(L"Compacta: verlo parado", L"El temporizador en la píldora aunque no corra"); toggle(ID_PILL_POMO_IDLE); next();
-            row(L"Compacta: barra de progreso", L"Línea roja bajo la píldora"); toggle(ID_PILL_POMO_BAR); next();
-            row(L"Compacta: sesiones", L"Añade las sesiones completadas hoy"); toggle(ID_PILL_POMO_SESSIONS); next();
             break;
         case SEC_CALENDAR:
             row(L"Vista inicial", L"Con la que se abre el calendario al arrancar", 200.0f); chips(ID_CAL_VIEW); next();
             row(L"Aviso por defecto", L"Para los eventos nuevos", 200.0f); chips(ID_ALERT); next();
-            row(L"Categoría por defecto", L"Para los eventos nuevos", 200.0f); dots(ID_CATEGORY); next();
+            row(L"Categoría por defecto", L"Para los eventos nuevos · " + std::wstring(CAL_CATS[(std::max)(0, (std::min)(CAL_CAT_COUNT - 1, st.defaultCategory))].name), 200.0f);
+            dots(ID_CATEGORY); next(); // the name in the description: the choice is not color-only
             row(L"Sonido de recordatorios", L"Pitido cuando llega el aviso de un evento"); toggle(ID_REMIND_SOUND); next();
             row(L"Tareas con fecha en el calendario", L"Las tareas con día u hora se ven en el calendario y al revés"); toggle(ID_TASKS_CAL); next();
             break;
@@ -742,17 +966,23 @@ private:
             field(F_G_URL, CR - 330.0f, 222.0f);
             if (!acc[1]->connected) button(CR - 100.0f, B_ACC_CONNECT, 1, 100.0f, L"Conectar");
             next();
+            ry += 20.0f; // gap between providers
             account(2, L"Outlook"); next();
-            row(L"ID de aplicación de Microsoft", L"Id. de aplicación (cliente) de Azure", 240.0f); field(F_MS_ID, CR - 260.0f, 260.0f); next();
+            row(L"1. ID de aplicación de Microsoft", L"Id. de aplicación (cliente) de Azure", 240.0f); field(F_MS_ID, CR - 260.0f, 260.0f); next();
+            row(L"2. Iniciar sesión", acc[2]->connected ? L"Conectado con tu cuenta de Microsoft" : L"Se abre el navegador para dar permiso", 300.0f);
+            if (!acc[2]->connected) button(CR - 100.0f, B_ACC_CONNECT, 2, 100.0f, L"Conectar");
+            next();
+            ry += 20.0f;
             account(3, L"Calendario por enlace"); next();
-            row(L"Dónde está el enlace", L"Outlook: Configuración → Calendario → Calendarios compartidos → Publicar un calendario → enlace ICS", 500.0f); next();
-            row(L"Enlace ICS", acc[3]->connected ? L"Desconecta para cambiarlo" : L"Solo lectura. Se guarda cifrado", 186.0f);
+            row(L"1. Copia el enlace ICS", L"Outlook: Configuración → Calendario → Calendarios compartidos → Publicar un calendario", 520.0f); next();
+            row(L"2. Enlace ICS", acc[3]->connected ? L"Desconecta para cambiarlo" : L"Solo lectura. Se guarda cifrado", 186.0f);
             field(F_ICS, CR - 330.0f, 222.0f);
             if (!acc[3]->connected) button(CR - 100.0f, B_ACC_CONNECT, 3, 100.0f, L"Conectar");
             next();
+            header(L"Todas las cuentas");
             row(L"Intervalo de sincronización", L"Cada cuánto se sincronizan las cuentas", 200.0f); chips(ID_SYNC_MIN); next();
             row(L"Guía paso a paso", L"Pasos del script de Google y del ID de Outlook"); button(CR - 110.0f, B_GUIDE, 0, 110.0f, L"Ver guía"); next();
-            row(L"Samsung", L"Guarda tus eventos en Google u Outlook desde el móvil"); next();
+            note(L"Samsung Calendar: guarda tus eventos en Google u Outlook desde el móvil y llegarán aquí.");
             break;
         case SEC_WEATHER:
             row(L"Detectar mi ubicación", L"Ubicación de Windows o, si no, aproximada por tu IP"); toggle(ID_WEATHER_AUTO); next();
@@ -761,17 +991,12 @@ private:
         case SEC_SYSTEM:
             row(L"Temperaturas", L"CPU y GPU, cuando Windows las ofrece"); toggle(ID_SYS_TEMPS); next();
             row(L"Potencia de la batería", L"Vatios que entran o salen"); toggle(ID_SYS_POWER); next();
-            row(L"Vista compacta", L"El sistema en la píldora, con esta pestaña elegida"); toggle(ID_PILL_SYS); next();
-            row(L"Compacta: CPU", L"Uso y, con Temperaturas, sus grados"); toggle(ID_PILL_SYS_CPU); next();
-            row(L"Compacta: GPU", L"Temperatura de la gráfica"); toggle(ID_PILL_SYS_GPU); next();
-            row(L"Compacta: memoria", L"Porcentaje de RAM en uso"); toggle(ID_PILL_SYS_RAM); next();
-            row(L"Compacta: disco", L"Espacio libre en C:"); toggle(ID_PILL_SYS_DISK); next();
-            row(L"Compacta: batería", L"A la derecha: vatios, o el porcentaje si no hay dato"); toggle(ID_PILL_SYS_POWER); next();
             break;
         case SEC_PERF:
             row(L"Animaciones", L"Rebote al abrir, cambio de pestaña y transiciones"); toggle(ID_PERF_ANIM); next();
             row(L"Fotogramas", L"Menos fotogramas, menos uso de CPU"); chips(ID_PERF_FPS); next();
             row(L"Luz ambiental y degradados", L"El brillo de color del panel y los fondos degradados"); toggle(ID_PERF_GLOW); next();
+            off = !st.perfGlow;
             row(L"Color de la luz", L"Sin música. Con música manda la carátula", 200.0f); chips(ID_GLOW_SOURCE); next();
             if (g_settings.glowSource == 3) {
                 row(L"Colores propios", L"Izquierda y derecha del panel");
@@ -784,15 +1009,14 @@ private:
                 }
                 next();
             }
+            off = false;
             row(L"Lectura de sensores", L"Cada cuánto se leen CPU, GPU y batería en Sistema"); chips(ID_PERF_SENSOR); next();
             row(L"Ahorro con batería", L"Sin animaciones ni luces y a 30 fps al desenchufar"); toggle(ID_PERF_SAVER); next();
-            row(L"Ecualizador", L"Barras animadas en la píldora mientras suena música"); toggle(ID_EQUALIZER); next();
-            row(L"Ojos", L"Mascota que parpadea en reposo; sin ojos, un calendario"); toggle(ID_EYES); next();
             break;
         case SEC_AI:
             row(L"Proveedor", L"Dónde se envían tus preguntas", 150.0f); chips(ID_AI_PROVIDER); next();
             row(L"Clave de API", L"Cifrada con tu cuenta de Windows", 230.0f);
-            button(CR - 70.0f, B_CLEAR_KEY, 0, 70.0f, L"Borrar");
+            if (hooks.hasKey()) button(CR - 70.0f, B_CLEAR_KEY, 0, 70.0f, L"Borrar", true);
             field(F_KEY, CR - 248.0f, 170.0f);
             next();
             row(L"Modelo", L"Vacío = el que usa el proveedor", 240.0f); field(F_MODEL, CR - 260.0f, 260.0f); next();
@@ -809,7 +1033,7 @@ private:
                 const std::wstring mb = sizes[m];
                 row(titles[m], busy ? L"Descargando de Hugging Face… (" + mb + L" MB)" : has ? L"Instalado · modelo local de Cactus, " + mb + L" MB en disco"
                                    : g_cactusDownload[m] == 2 ? std::wstring(L"No se pudo descargar. Revisa tu conexión") : L"No instalado · " + mb + L" MB, se ejecuta en tu PC");
-                button(CR - 110.0f, B_WHISTLE, m, 110.0f, busy ? L"Descargando" : has ? L"Borrar" : L"Descargar");
+                button(CR - 110.0f, B_WHISTLE, m, 110.0f, busy ? L"Descargando" : has ? L"Borrar" : L"Descargar", has);
                 next();
             }
             break;
@@ -819,7 +1043,7 @@ private:
             row(L"Capri Notch", L"Versión " + std::wstring(APP_VERSION) + L" · " + std::to_wstring(pmc.WorkingSetSize >> 20) + L" MB en uso");
             next();
             row(L"Carpeta de datos", L"Ajustes, eventos, tareas y tokens"); button(CR - 110.0f, B_DATA, 0, 110.0f, L"Abrir carpeta"); next();
-            row(L"Salir", L"Cierra Capri Notch hasta que lo vuelvas a abrir"); button(CR - 180.0f, B_QUIT, 0, 180.0f, L"Salir de Capri Notch"); next();
+            row(L"Salir de Capri Notch", L"Cierra Capri Notch hasta que lo vuelvas a abrir"); button(CR - 90.0f, B_QUIT, 0, 90.0f, L"Salir", true); next();
             break;
         }
         }
@@ -830,6 +1054,12 @@ private:
         }
         contentH = ry - top0;
         g.ResetClip();
+        if (contentH > BOTTOM - TOP) { // scroll thumb: its size and place show how much is above and below
+            float view = BOTTOM - TOP, maxS = contentH - view;
+            float th = (std::max)(28.0f, view * view / contentH), ty = TOP + (maxS > 0 ? scrollY / maxS : 0) * (view - th);
+            SolidBrush thumb(Color(60, 255, 255, 255));
+            fillRound(&thumb, CR + 12.0f, ty, 3.0f, th, 1.5f);
+        }
 
         Graphics screen(dc);
         screen.DrawImage(&bmp, 0, 0, bmp.GetWidth(), bmp.GetHeight());

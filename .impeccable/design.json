@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-16T00:00:00Z",
+  "title": "Design System: Capri Notch",
+  "extensions": {
+    "colorMeta": {
+      "capri-periwinkle": { "role": "primary", "displayName": "Capri Periwinkle", "canonical": "oklch(71% 0.149 269)", "tonalRamp": ["oklch(15% 0.149 269)", "oklch(26% 0.149 269)", "oklch(38% 0.149 269)", "oklch(50% 0.149 269)", "oklch(62% 0.149 269)", "oklch(71% 0.149 269)", "oklch(84% 0.09 269)", "oklch(95% 0.03 269)"] },
+      "glass-core": { "role": "neutral", "displayName": "Glass", "canonical": "oklch(14% 0.007 270)", "tonalRamp": ["oklch(5% 0.007 270)", "oklch(14% 0.007 270)", "oklch(21% 0.008 275)", "oklch(30% 0.011 271)", "oklch(45% 0.011 270)", "oklch(66% 0.011 267)", "oklch(85% 0.006 280)", "oklch(96% 0.004 286)"] },
+      "surface": { "role": "neutral", "displayName": "Surface", "canonical": "oklch(21% 0.008 275)" },
+      "chip": { "role": "neutral", "displayName": "Chip", "canonical": "oklch(30% 0.011 271)" },
+      "text": { "role": "neutral", "displayName": "Text", "canonical": "oklch(96% 0.004 286)" },
+      "text-dim": { "role": "neutral", "displayName": "Dim Text", "canonical": "oklch(66% 0.011 267)" },
+      "signal-green": { "role": "status", "displayName": "Signal Green", "canonical": "oklch(80% 0.182 152)" },
+      "signal-amber": { "role": "status", "displayName": "Signal Amber", "canonical": "oklch(84% 0.164 84)" },
+      "signal-red": { "role": "status", "displayName": "Signal Red", "canonical": "oklch(64% 0.208 25)" },
+      "glow-classic-blue": { "role": "ambient", "displayName": "Classic Glow Blue" },
+      "glow-classic-gold": { "role": "ambient", "displayName": "Classic Glow Gold" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "One huge figure per view (weather temperature)." },
+      "headline": { "displayName": "Headline", "purpose": "Pomodoro countdown and big numbers." },
+      "lyric": { "displayName": "Lyric", "purpose": "The current lyric line; neighbours at 9.5pt and 10pt regular, dimmed." },
+      "label": { "displayName": "Label", "purpose": "Everything in the collapsed pill; chips and list rows." },
+      "caption": { "displayName": "Caption", "purpose": "Settings row descriptions, time stamps." },
+      "icon": { "displayName": "Icon", "purpose": "Segoe Fluent Icons glyphs; 8pt small, 11pt default, 18pt big." }
+    },
+    "shadows": [
+      { "name": "notch-hairline", "value": "inset 0 0 0 1px rgba(255,255,255,0.12)", "purpose": "The notch edge (a 26%→4%→13% diagonal gradient with glow on); never on the top line." },
+      { "name": "card-hairline", "value": "inset 0 0 0 1px rgba(255,255,255,0.10)", "purpose": "Card and field edges. No drop shadows exist in the system." },
+      { "name": "base-glow", "value": "radial-gradient at the panel base, tint alpha 72/80 of 255", "purpose": "Ambient light pooling at the bottom of the expanded panel." }
+    ],
+    "motion": [
+      { "name": "notch-spring", "value": "damped spring, stiffness 320, damping 30, sub-steps of 1/120 s", "purpose": "Notch width and height when opening, closing or resizing." },
+      { "name": "tab-switch", "value": "220ms cubic ease-out", "purpose": "Tab highlight glide plus content slide (28 px) and fade." },
+      { "name": "lyric-slide", "value": "260ms", "purpose": "Lyric line change." },
+      { "name": "settings-section", "value": "160ms cubic ease-out", "purpose": "Sidebar chip slide and the content rising 12 px." },
+      { "name": "settings-open", "value": "160ms", "purpose": "Settings window fade-in." },
+      { "name": "toggle", "value": "140ms", "purpose": "Toggle track blend and knob slide." },
+      { "name": "blink", "value": "every 4500ms, closed 140ms", "purpose": "Nusa's eyes in the idle pill." }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Collapsed Notch",
+      "kind": "custom",
+      "refersTo": "notch-collapsed",
+      "description": "The idle pill: eyes, the next thing today, and the clock.",
+      "html": "<div class=\"ds-notch\"><span class=\"ds-eyes\"><i></i><i></i></span><span class=\"ds-notch-text\">Dentista a las 15:30</span><b class=\"ds-notch-clock\">14:02</b></div>",
+      "css": ".ds-notch { display: flex; align-items: center; gap: 8px; width: 220px; height: 34px; padding: 0 12px; background: linear-gradient(135deg, #121317 0%, #08090C 46%, #010203 100%); color: #F2F2F5; font: 400 9pt 'Segoe UI', sans-serif; border-radius: 0 0 16px 16px; box-shadow: inset 0 -1px 0 rgba(255,255,255,0.12); } .ds-eyes { display: flex; gap: 4px; width: 20px; } .ds-eyes i { width: 5px; height: 9px; border-radius: 50%; background: #fff; animation: ds-blink 4.5s infinite; } @keyframes ds-blink { 0%, 96.9% { transform: scaleY(1); } 97%, 100% { transform: scaleY(0.22); } } .ds-notch-text { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ds-notch-clock { font-weight: 700; }"
+    },
+    {
+      "name": "Tab Row",
+      "kind": "nav",
+      "refersTo": "tab-active",
+      "description": "Icon tabs; one tab-well square glides to the active tab.",
+      "html": "<nav class=\"ds-tabs\"><button class=\"ds-tab is-on\">♪</button><button class=\"ds-tab\">◷</button><button class=\"ds-tab\">▦</button></nav>",
+      "css": ".ds-tabs { display: flex; gap: 4px; padding: 8px 16px; background: #08090C; } .ds-tab { width: 34px; height: 30px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: #8E9198; font: 11pt 'Segoe Fluent Icons', 'Segoe UI Symbol', sans-serif; transition: background 220ms cubic-bezier(0.33,1,0.68,1), color 220ms; } .ds-tab:hover { color: #F2F2F5; } .ds-tab:focus-visible { outline: 1px solid #7C9CFF; } .ds-tab.is-on { background: #222530; border-color: rgba(124,156,255,0.24); color: #7C9CFF; }"
+    },
+    {
+      "name": "Play Disc",
+      "kind": "button",
+      "refersTo": "play-disc",
+      "description": "The one disc-white primary action in the music tab.",
+      "html": "<button class=\"ds-disc\">▶</button>",
+      "css": ".ds-disc { width: 40px; height: 40px; border: none; border-radius: 50%; background: #F5F5F7; color: #08090C; font-size: 14px; transition: transform 140ms cubic-bezier(0.33,1,0.68,1); } .ds-disc:hover { transform: scale(1.06); } .ds-disc:focus-visible { outline: 2px solid #7C9CFF; outline-offset: 2px; } .ds-disc:active { transform: scale(0.96); }"
+    },
+    {
+      "name": "Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Choice chips in settings rows; selected goes disc-white with ink text.",
+      "html": "<div class=\"ds-chips\"><button class=\"ds-chip is-on\">60 fps</button><button class=\"ds-chip\">30 fps</button></div>",
+      "css": ".ds-chips { display: flex; gap: 6px; } .ds-chip { height: 26px; padding: 0 10px; border: none; border-radius: 8px; background: #2C2E34; color: #F2F2F5; font: 400 9pt 'Segoe UI', sans-serif; transition: background 140ms; } .ds-chip:hover { background: #45474C; } .ds-chip:focus-visible { outline: 1px solid #7C9CFF; } .ds-chip.is-on { background: #F5F5F7; color: #08090C; }"
+    },
+    {
+      "name": "Toggle",
+      "kind": "custom",
+      "refersTo": "toggle-on",
+      "description": "Settings switch; track blends chip to periwinkle, knob slides 18 px.",
+      "html": "<button class=\"ds-toggle is-on\" role=\"switch\" aria-checked=\"true\"><i></i></button>",
+      "css": ".ds-toggle { position: relative; width: 40px; height: 22px; border: none; border-radius: 11px; background: #2C2E34; transition: background 140ms cubic-bezier(0.33,1,0.68,1); } .ds-toggle i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #8E9198; transition: transform 140ms cubic-bezier(0.33,1,0.68,1), background 140ms; } .ds-toggle.is-on { background: #7C9CFF; } .ds-toggle.is-on i { transform: translateX(18px); background: #fff; } .ds-toggle:focus-visible { outline: 1px solid #7C9CFF; outline-offset: 2px; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Surface card with a faint white hairline; no shadow.",
+      "html": "<div class=\"ds-card\"><b>Whistle</b><p>Escuchando…</p></div>",
+      "css": ".ds-card { padding: 14px; border-radius: 12px; background: #16171B; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.10); color: #F2F2F5; font: 400 9pt 'Segoe UI', sans-serif; } .ds-card b { font: 700 11pt 'Segoe UI', sans-serif; } .ds-card p { margin: 4px 0 0; color: #8E9198; }"
+    },
+    {
+      "name": "Settings Nav Row",
+      "kind": "nav",
+      "refersTo": "settings-nav-active",
+      "description": "Sidebar row; active sits on a chip with a periwinkle bar on its left.",
+      "html": "<nav class=\"ds-side\"><a class=\"ds-side-row is-on\">General</a><a class=\"ds-side-row\">Píldora</a></nav>",
+      "css": ".ds-side { width: 200px; padding: 12px; background: linear-gradient(#16171D, #101115); } .ds-side-row { position: relative; display: flex; align-items: center; width: 176px; height: 36px; padding-left: 38px; box-sizing: border-box; border-radius: 9px; color: #8E9198; font: 400 10pt 'Segoe UI', sans-serif; transition: background 160ms; } .ds-side-row:hover { background: #1C1E24; } .ds-side-row:focus-visible { outline: 1px solid #7C9CFF; } .ds-side-row.is-on { background: #2C2E34; color: #F2F2F5; } .ds-side-row.is-on::before { content: ''; position: absolute; left: 0; top: 9px; width: 3px; height: 18px; border-radius: 1.5px; background: #7C9CFF; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Living Bezel",
+    "overview": "Capri Notch is not a window that sits on the screen; it is the top edge of the screen that has come alive. The body is near-black glass that runs flush into the bezel: no top hairline, concave shoulders (12 px) where the screen edge curves down into it, and corners that soften as it opens (16 px collapsed, 22 px expanded). At rest it is a 34 px sliver holding one line of truth, either the next event, the running timer or the song, beside a clock and a pair of white eyes that blink. Open, it grows on a damped spring into a panel where light pools at the base, tinted by the album cover or the chosen glow colors.\n\nThe system is dark, dense and quiet. Depth comes from tone and light, never from drop shadows: surfaces step up from glass (#08090C) to surface (#16171B) to chip (#2C2E34), and the only saturated color in steady use is Capri Periwinkle, which marks what is active. Everything alive (glow, gradients, eased motion, the equalizer, the eyes) has a switch, and the plain path still looks finished.\n\nThe settings window is the same material laid flat: a 780×540 dark ground with a gradient sidebar, sections that rise 12 px into place, and toggles that slide between grey and periwinkle.",
+    "keyCharacteristics": [
+      "Near-black glass that melts into the top screen edge; the top line is never stroked.",
+      "Tonal layering instead of shadows; light is the only \"elevation\".",
+      "One accent (Capri Periwinkle) for active state; status colors only for status.",
+      "Segoe UI and Segoe Fluent Icons, small and bold: system-native, not branded type.",
+      "Motion is physical (spring) for size and eased cubic-out for everything else, all of it optional.",
+      "The mascot's eyes are the signature of the idle state."
+    ],
+    "rules": [
+      { "name": "The One Voice Rule", "body": "Capri Periwinkle is the only accent. Category and status colors label data; they never decorate chrome.", "section": "colors" },
+      { "name": "The Light Not Paint Rule", "body": "Color that is not data or state enters only as light (the base glow, the cover tint on the equalizer), never as filled panels.", "section": "colors" },
+      { "name": "The One Line Rule", "body": "Text in the notch never wraps: it truncates with an ellipsis, and the collapsed pill widens (up to 560 px) before it truncates. It never grows taller.", "section": "typography" },
+      { "name": "The Melted Edge Rule", "body": "The notch's top edge is never stroked or lit; the clip starts 1 px down, so the body reads as continuous with the screen bezel.", "section": "elevation" },
+      { "name": "The Plain Path Rule", "body": "With glow and gradients off (Rendimiento, or battery saver), every gradient falls back to its middle solid and the glow disappears. Design the solid version first; light is a bonus on top of it.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do start every surface from glass-core / settings-ground and step lighter with surface → tab-well → chip for anything that comes forward.",
+      "Do use Capri Periwinkle only for active, on and focused states, and for live data lines (progress, sparkline).",
+      "Do give every new glow, gradient or animation a solid, static fallback that looks finished, under the existing Rendimiento switches.",
+      "Do keep collapsed-pill content on one line in 9pt Segoe UI; widen the pill, never heighten it.",
+      "Do use Segoe Fluent Icons glyphs for icons, falling back to MDL2 Assets.",
+      "Do use cubic ease-out (140-220 ms) for state changes and the spring only for the notch's size."
+    ],
+    "donts": [
+      "Don't stroke or light the notch's top edge; it must melt into the bezel.",
+      "Don't add drop shadows; depth is tone and light.",
+      "Don't introduce a second accent color or use status/category colors as decoration.",
+      "Don't give more than one element per view the disc-white fill.",
+      "Don't wrap text inside the notch; truncate with an ellipsis."
+    ]
+  }
+}

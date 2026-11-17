@@ -1043,10 +1043,13 @@ public:
     // Disconnect: local changes not uploaded yet are asked about first; the service's events leave the calendar.
     // The events of a removed service are only dropped here, after the question.
     void DisconnectSync(SyncAccount& a) {
-        int pending = 0;
-        for (const CalEvent& e : events.events) pending += e.src == a.src && e.dirty != 0;
-        if (pending && MessageBoxW(hWnd, (L"Hay " + std::to_wstring(pending) + L" cambios sin subir. ¿Desconectar igualmente?").c_str(),
-                                   L"Capri Notch", MB_YESNO | MB_ICONWARNING) != IDYES) return;
+        int pending = 0, n = 0;
+        for (const CalEvent& e : events.events) if (e.src == a.src) { ++n; pending += e.dirty != 0; }
+        std::wstring msg = pending ? L"Hay " + std::to_wstring(pending) + L" cambios sin subir que se perderán. " : L"";
+        if (n == 0) msg += L"No hay eventos de esta cuenta en Capri. ¿Desconectar?"; // "0 eventos" reads as a mistake
+        else msg += L"Se quitarán de Capri " + (n == 1 ? std::wstring(L"1 evento") : std::to_wstring(n) + L" eventos") +
+               L" de esta cuenta; en el servicio no se borra nada. ¿Desconectar?";
+        if (MessageBoxW(hWnd, msg.c_str(), L"Capri Notch", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
         DeleteFileW(a.tokenFile.c_str());
         ChangeEvents([&] {
             auto& v = events.events;

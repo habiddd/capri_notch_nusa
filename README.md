@@ -135,20 +135,23 @@ Samsung no tiene API pública. En el móvil, abre **Samsung Calendar → Ajustes
 
 Se abre de tres formas: con el icono de la bandeja (clic), con clic derecho sobre el icono o sobre la píldora (**Configuración**), o con el engranaje de la fila de pestañas del panel expandido, que abre directamente la sección de esa pestaña. Los cambios se aplican al instante y se guardan en `%LOCALAPPDATA%\capri_settings.ini`. Sin ese archivo se usan los valores por defecto de siempre; borrarlo restablece todo.
 
+Esc cierra la ventana. Narrador lee el nombre y el estado de cada control.
+
 El menú del icono de la bandeja tiene **Configuración**, **Ocultar notch** / **Mostrar notch**, **Mover al otro monitor** y **Salir de Capri Notch**.
 
 - **General**: iniciar con Windows (usuario actual), abrir al pasar el ratón, retraso al abrir y al cerrar, esconder al hacer clic al lado, ocultar en pantalla completa (desactivado por defecto), miniaturas de la pestaña Archivos, mover al otro monitor.
-- **Píldora**: dormir tras N minutos sin uso, aviso del cargador y letra en la píldora.
-- **Música**: la misma opción de letra y un recordatorio de que las letras son de LRCLIB.
+- **Píldora**: dormir tras N minutos sin uso, ojos, aviso del cargador, y lo que muestra en su vista compacta: letra, carátula, artista y ecualizador con música (letras de LRCLIB, gratis y sin cuenta), Pomodoro y Sistema.
 - **Pomodoro**: duración de enfoque (5 a 90 min) y descanso (1 a 30 min), y sonido al terminar. Con el temporizador parado, el cambio se aplica ya; en marcha, a partir del siguiente ciclo.
 - **Calendario**: vista inicial, avisos y categoría por defecto para los eventos nuevos, sonido de recordatorios y tareas con fecha en el calendario.
 - **Cuentas**: estado de Google, Outlook y el enlace ICS, con Conectar, Desconectar y Sincronizar ahora. Google: copiar el script y pegar la URL de la aplicación web (ver "Sincronizar calendario"). El ID de Microsoft se guarda en `capri_sync.ini`. Intervalo de sincronización de 5, 15 o 30 min.
 - **Clima**: detectar mi ubicación (la de Windows o, si no, la aproximada por IP) o una ciudad escrita; con el campo vacío es automática.
 - **Sistema**: temperaturas de CPU y GPU, y potencia de la batería, cuando Windows las ofrece.
-- **Rendimiento**: animaciones, fotogramas (60 o 30), luz ambiental y degradados, cada cuánto se leen los sensores de Sistema (1, 2 o 5 s) y ahorro con batería (sin animaciones ni luces y a 30 fps al desenchufar); también el ecualizador y los ojos de la píldora, que se mueven aunque las animaciones estén apagadas. Se aplican al instante.
+- **Rendimiento**: animaciones, fotogramas (60 o 30), luz ambiental y degradados, cada cuánto se leen los sensores de Sistema (1, 2 o 5 s) y ahorro con batería (sin animaciones ni luces y a 30 fps al desenchufar). Se aplican al instante.
 - **Configuración → Rendimiento → Color de la luz**: elige la luz del pie del panel cuando no suena música: Clásico (azul y dorado), Fondo (dos colores del fondo de escritorio), Windows (el color de acento) o Propio (dos colores que eliges). Solo se recalcula al cambiar el ajuste, el fondo o el acento.
 - **IA**: proveedor (OpenAI, DeepSeek, Ollama local o Personalizado), modelo y clave de API. Con Personalizado se editan también el servidor, la ruta, el puerto y HTTPS. Ollama no necesita clave.
 - **Acerca de**: versión, memoria en uso, abrir la carpeta de datos y salir.
+
+Desconectar, Borrar y Salir piden confirmación antes de actuar.
 
 La clave de API se guarda cifrada con DPAPI en `%LOCALAPPDATA%\capri_ai_key.bin`, ligada a tu cuenta de Windows. Nunca va al archivo de ajustes ni a los registros.
 
