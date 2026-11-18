@@ -16,6 +16,7 @@
 #include "media.h"
 #include "ai_client.h"
 #include "whistle.h"
+#include "camera.h"
 #include "ui.h"
 #include "sync.h"
 #include "settings.h"
@@ -124,6 +125,7 @@ public:
     MediaManager media;
     AICompanion ai;
     WhistleEngine whistle;
+    WhistleEngine camera{CACTUS_CAMERA}; // its own engine: the notch's stops (collapse, tab, drag) must not end the camera
 
     bool expanded = false;
     bool isTrackingMouse = false;
@@ -231,6 +233,7 @@ public:
     void ApplySettings() {
         ai.Configure(AiPreset(g_settings));
         LoadProviders();
+        if (camera.Running() && camera.startedHand != g_settings.handEngine) { camera.Stop(); camera.Start(hWnd); } // the worker loads its models at start
         SetTimer(hWnd, TIMER_SYNC, (UINT)g_settings.syncMinutes * 60000, NULL);
         pomo.Retime();
         if (RunAtLogin() != g_settings.startWithWindows) SetRunAtLogin(g_settings.startWithWindows);
@@ -427,7 +430,7 @@ public:
         ui.linkGoogle = ics.account.find(L"google") != std::wstring::npos; // the link's host decides its agenda mark, G or O
 
         // Render UI with correct scanline stride
-        ui.Render(pvBits, stride, pw, ph, scale, expanded, activeTab, pomo, todo, events, media, ai, whistle, shelf);
+        ui.Render(pvBits, stride, pw, ph, scale, expanded, activeTab, pomo, todo, events, media, ai, whistle, camera, shelf);
         if (!expanded && targetWidth != ui.pillWidth + 2 * NOTCH_SHOULDER) UpdateTargetDimensions(); // new text: the animation tick resizes
 
         int posX = monitorLeft + (monitorWidth - pw) / 2;
@@ -537,7 +540,7 @@ public:
     }
 
     void OnSecondTick() {
-        if (whistle.process && !whistle.Running()) UpdateDisplay(); // the worker ended by itself: show why
+        if ((whistle.process && !whistle.Running()) || (camera.process && !camera.Running())) UpdateDisplay(); // a worker ended by itself: show why
         CheckReminders();
         CheckFullscreen();
         pomo.Tick();
@@ -842,6 +845,20 @@ public:
             if ((size_t)h.a < shelf.files.size()) ShellExecuteW(NULL, L"open", shelf.files[h.a].c_str(), NULL, NULL, SW_SHOWNORMAL);
             return;
         }
+    }
+
+    // The camera's lock countdown: opens the notch on IA with the camera chosen, so it can be seen and cancelled
+    void ShowCamera() {
+        whistle.Stop();
+        whistle.model = CACTUS_CAMERA;
+        KillTimer(hWnd, TIMER_LEAVE);
+        SetTucked(false);
+        ui.TabChanged(activeTab, TAB_AI);
+        activeTab = TAB_AI;
+        ui.editing = false;
+        SetExpanded(true);
+        UpdateTargetDimensions();
+        UpdateDisplay();
     }
 
     // A file is being dragged over the notch, or was just dropped: open on Archivos so the drop has somewhere to land
@@ -1159,9 +1176,9 @@ public:
                 }
             UpdateDisplay();
         } else if (activeTab == TAB_AI) {
-            if (y >= 46 && y < 70 && x >= w - 156 && x <= w - 20) {
-                // Model chips: Whistle (w-156..w-90) and Mirage (w-86..w-20); changing ends the one that was running
-                int m = x < w - 88 ? CACTUS_WHISTLE : CACTUS_MIRAGE;
+            if (y >= 46 && y < 70 && x >= w - 226 && x <= w - 20) {
+                // Model chips: Whistle, Mirage, Cámara (70 px apart); changing ends the Whistle or Mirage worker that was running, never the camera
+                int m = (x - (w - 226)) / 70;
                 if (m != whistle.model) {
                     whistle.Stop();
                     whistle.model = m;
@@ -1171,9 +1188,11 @@ public:
                 UpdateDisplay();
             } else if (y >= 70 && y <= 98 && x >= 20 && x <= w - 20) {
                 // The chosen model's bar: on and off; without the download it opens the setting that gets it
-                if (!CactusInstalled(whistle.model)) return OpenSettings(SettingsWindow::SEC_AI);
-                if (whistle.Running()) whistle.Stop();
-                else whistle.Start(hWnd);
+                WhistleEngine& e = whistle.model == CACTUS_CAMERA ? camera : whistle;
+                // A running worker is always stoppable, even when its files were deleted under it
+                if (e.Running()) e.Stop();
+                else if (!CactusInstalled(whistle.model)) return OpenSettings(SettingsWindow::SEC_AI);
+                else e.Start(hWnd);
                 UpdateDisplay();
             } else if (y >= 192 && y <= 222) {
                 // Quick prompts (y: 192..222)
@@ -1389,10 +1408,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_App.UpdateDisplay();
         break;
 
-    case WM_COPYDATA: { // the Whistle worker's answers (WhistleSend)
+    case WM_COPYDATA: { // the workers' answers (WhistleSend): wParam is the model that sent it
         const COPYDATASTRUCT* cd = (const COPYDATASTRUCT*)lParam;
-        if (cd && g_App.whistle.process && cd->cbData < (1u << 18))
-            g_App.whistle.OnMessage(cd->dwData, std::string((const char*)cd->lpData, cd->cbData));
+        WhistleEngine& e = wParam == CACTUS_CAMERA ? g_App.camera : g_App.whistle;
+        if (cd && e.process && cd->cbData < (1u << 18)) {
+            e.OnMessage(cd->dwData, std::string((const char*)cd->lpData, cd->cbData));
+            if (wParam == CACTUS_CAMERA && cd->dwData == WHISTLE_ALERT) g_App.ShowCamera();
+        }
         g_App.UpdateDisplay();
         return TRUE;
     }
@@ -1436,6 +1458,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Worker mode: this process is the Whistle or Mirage engine of a running notch (see whistle.h). It must not reach the single-instance check.
     if (const char* w = strstr(lpCmdLine, "--whistle ")) return WhistleWorker((HWND)(UINT_PTR)strtoull(w + 10, NULL, 10));
     if (const char* m = strstr(lpCmdLine, "--mirage ")) return MirageWorker((HWND)(UINT_PTR)strtoull(m + 9, NULL, 10));
+    if (const char* c = strstr(lpCmdLine, "--camera ")) { // the worker reads the hand engine from the same settings as the notch
+        LoadSettings(SettingsIniPath(), g_settings);
+        return CameraWorker((HWND)(UINT_PTR)strtoull(c + 9, NULL, 10));
+    }
 
     // Quick debug log
     FILE* dbg = fopen("C:\\capri_debug.txt", "w");

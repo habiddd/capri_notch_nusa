@@ -17,11 +17,14 @@ inline std::wstring AppDataFile(const wchar_t* name) {
 // Written to a temp file and swapped in, so a crash mid-write never leaves a half file.
 inline bool WriteBytesFile(const std::wstring& path, const std::string& bytes) {
     std::wstring tmp = path + L".tmp";
+    bool ok;
     {
         std::ofstream out(tmp.c_str(), std::ios::binary);
-        if (!(out << bytes)) return false;
+        ok = !!(out << bytes);
     }
-    return MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    ok = ok && MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    if (!ok) DeleteFileW(tmp.c_str()); // a failed write must not leave a half-written .tmp behind
+    return ok;
 }
 
 // False when there is no file yet.

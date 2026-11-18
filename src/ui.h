@@ -382,7 +382,7 @@ public:
     }
 
     void Render(void* pvBits, int stride, int pixelWidth, int pixelHeight, float scale, bool expanded, NotchTab activeTab,
-                PomodoroManager& pomo, TodoManager& todo, EventManager& events, MediaManager& media, AICompanion& ai, WhistleEngine& wake, ShelfManager& shelf) {
+                PomodoroManager& pomo, TodoManager& todo, EventManager& events, MediaManager& media, AICompanion& ai, WhistleEngine& wake, WhistleEngine& cam, ShelfManager& shelf) {
         using namespace Gdiplus;
 
         const Perf perf = EffectivePerf(); // read once per frame: animations and glow off take the plain paths below
@@ -1291,9 +1291,9 @@ public:
 
             } else if (activeTab == TAB_AI) {
                 g.DrawString(L"Compañero Capri", -1, &fontTitle, RectF(20.0f, 44.0f, 240.0f, 26.0f), &leftMid, &textWhite);
-                // Model chips: Whistle and Mirage, the one chosen is filled (the click handler uses the same spots)
+                // Model chips: Whistle, Mirage and Cámara, the one chosen is filled (the click handler uses the same spots)
                 for (int i = 0; i < CACTUS_COUNT; ++i) {
-                    const float cx = width - 156.0f + i * 70.0f;
+                    const float cx = width - 226.0f + i * 70.0f;
                     GraphicsPath chip;
                     AddRoundRect(chip, cx, 46.0f, 66.0f, 22.0f, 8.0f);
                     if (i == wake.model) {
@@ -1304,7 +1304,9 @@ public:
                 }
 
                 // Model bar: speech to text (Whistle) or the screen described (Mirage) in a worker process. A click turns it on and off; off ends the worker and frees all its memory.
-                const bool wInstalled = CactusInstalled(wake.model), wOn = wake.Running(), wLive = wOn && wake.ready;
+                const bool wCam = wake.model == CACTUS_CAMERA;
+                WhistleEngine& e = wCam ? cam : wake; // the camera has its own engine, so it runs with the notch closed
+                const bool wInstalled = CactusInstalled(wake.model), wOn = e.Running(), wLive = wOn && e.ready;
                 const bool wMirage = wake.model == CACTUS_MIRAGE;
                 const std::wstring wName = CACTUS_NAME[wake.model];
                 GraphicsPath bWhistle;
@@ -1312,12 +1314,13 @@ public:
                 SolidBrush whistleBg(wLive ? Color(255, 16, 44, 28) : Color(255, 22, 23, 27));
                 g.FillPath(&whistleBg, &bWhistle);
                 g.DrawPath(&surfaceEdge, &bWhistle);
-                SolidBrush dot(wLive ? Color(255, 74, 222, 128) : !wake.error.empty() ? Color(255, 239, 68, 68) : Color(255, 90, 92, 98));
+                SolidBrush dot(wLive ? Color(255, 74, 222, 128) : !e.error.empty() ? Color(255, 239, 68, 68) : Color(255, 90, 92, 98));
                 g.FillEllipse(&dot, 32.0f, 80.0f, 8.0f, 8.0f);
                 std::wstring wLabel = !wInstalled ? wName + L" no está instalado · clic para descargarlo en Configuración"
-                                    : wLive ? (wMirage ? std::wstring(L"Compartiendo tu pantalla con Mirage · clic para dejar de compartir") : std::wstring(L"Escuchando · clic para apagar y liberar la memoria"))
+                                    : wLive ? (wCam ? std::wstring(L"La cámara controla tu PC · clic para apagarla") : wMirage ? std::wstring(L"Compartiendo tu pantalla con Mirage · clic para dejar de compartir") : std::wstring(L"Escuchando · clic para apagar y liberar la memoria"))
                                     : wOn ? L"Cargando " + wName + L"…"
-                                    : !wake.error.empty() ? wake.error + L" · clic para reintentar"
+                                    : !e.error.empty() ? e.error + L" · clic para reintentar"
+                                    : wCam ? std::wstring(L"Cámara apagada · 0 MB en RAM · clic para encenderla")
                                     : wMirage ? wName + L" apagado · 0 MB en RAM · clic para compartir la pantalla"
                                     : wName + L" apagado · 0 MB en RAM · clic para dictar";
                 g.DrawString(wLabel.c_str(), -1, &fontSmall, RectF(48.0f, 72.0f, (float)(width - 80), 24.0f), &leftMid, wLive ? &accentGreen : &textDim);
@@ -1328,7 +1331,9 @@ public:
                 g.FillPath(&surface, &card);
                 g.DrawPath(&surfaceEdge, &card);
                 std::wstring response;
-                if (wOn || !wake.text.empty()) {
+                if (wCam) { // the gestures are shown even while it is off, so they can be learnt before turning it on
+                    response = e.text.empty() ? std::wstring(CAMERA_HELP) : e.text;
+                } else if (wOn || !wake.text.empty()) {
                     response = wake.text;
                     if (!wake.pending.empty()) response += (response.empty() ? L"" : L" ") + wake.pending + L"…";
                     if (response.empty() && wLive) response = wMirage ? std::wstring(L"Mirando tu pantalla…") : std::wstring(L"Habla: lo que digas aparece aquí.");

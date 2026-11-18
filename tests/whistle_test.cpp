@@ -35,6 +35,22 @@ int main() {
     assert(m.text.empty());
     assert(CactusModel(CACTUS_MIRAGE).find(L"\\models\\Mirage.cact") != std::wstring::npos);
 
+    // The camera: its engine takes plain text (no JSON), and its second model is the hand one
+    WhistleEngine c(CACTUS_CAMERA);
+    c.OnMessage(WHISTLE_TEXT, "Cursor");
+    assert(c.text == L"Cursor");
+    c.OnMessage(WHISTLE_ALERT, "Cerrando sesión en 3…");
+    assert(c.text == L"Cerrando sesión en 3…");
+    assert(CameraModel(1).find(L"\\models\\hand.onnx") != std::wstring::npos);
+
+    // The hand engines' files: MediaPipe's two models, and RTMPose's detector and pose model
+    assert(HandModel(HAND_MEDIAPIPE, 0).find(L"\\models\\palm.onnx") != std::wstring::npos);
+    assert(HandModel(HAND_MEDIAPIPE, 1).find(L"\\models\\hand.onnx") != std::wstring::npos);
+    assert(HandModel(HAND_RTMPOSE, 0).find(L"\\models\\rtm_det.onnx") != std::wstring::npos);
+    assert(HandModel(HAND_RTMPOSE, 1).find(L"\\models\\rtm_pose.onnx") != std::wstring::npos);
+    // The RTMPose zips are checked against their published hashes before anything is extracted
+    assert(std::string(RTM_ZIPS[0].zipSha).size() == 64 && std::string(RTM_ZIPS[1].onnxSha).size() == 64);
+
     puts("whistle_test ok");
     return 0;
 }

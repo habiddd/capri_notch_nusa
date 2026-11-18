@@ -34,6 +34,7 @@ struct Settings {
     std::wstring aiHost, aiPath = L"/v1/chat/completions", aiModel;
     int aiPort = 443;
     bool aiHttps = true;
+    int handEngine = 0;       // the camera's hand engine: 0 MediaPipe (fast, CPU), 1 RTMPose (precise, GPU)
     // Sistema: CPU and GPU temperatures, and battery watts, when Windows offers them
     bool sysTemps = true, sysPower = true;
     bool shelfThumbs = true; // Archivos, save mode: a thumbnail beside each name
@@ -131,6 +132,7 @@ inline bool LoadSettings(const std::wstring& path, Settings& s) {
     flag(L"tasksInCalendar", s.tasksInCalendar);
     numIn(L"syncMinutes", s.syncMinutes, { 5, 15, 30 });
     num(L"aiProvider", s.aiProvider, 0, 3);
+    num(L"handEngine", s.handEngine, 0, 1);
     str(L"aiHost", s.aiHost);
     str(L"aiPath", s.aiPath);
     str(L"aiModel", s.aiModel);
@@ -179,6 +181,7 @@ inline bool SaveSettings(const std::wstring& path, const Settings& s) {
     line(L"tasksInCalendar", flag(s.tasksInCalendar));
     line(L"syncMinutes", std::to_wstring(s.syncMinutes));
     line(L"aiProvider", std::to_wstring(s.aiProvider));
+    line(L"handEngine", std::to_wstring(s.handEngine));
     line(L"aiHost", s.aiHost);
     line(L"aiPath", s.aiPath);
     line(L"aiModel", s.aiModel);

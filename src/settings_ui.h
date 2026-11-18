@@ -147,9 +147,9 @@ private:
               ID_SYNC_MIN, ID_AI_PROVIDER, ID_AI_HTTPS, ID_WEATHER_AUTO, ID_SYS_TEMPS, ID_SYS_POWER, ID_TASKS_CAL,
               ID_PILL_ART, ID_PILL_ARTIST, ID_PILL_POMO_IDLE, ID_PILL_POMO_BAR, ID_PILL_POMO_SESSIONS, ID_PILL_SYS, ID_PILL_SYS_CPU,
               ID_PILL_SYS_GPU, ID_PILL_SYS_RAM, ID_PILL_SYS_DISK, ID_PILL_SYS_POWER, // the ID_PILL_ block follows PillFlags' order
-              ID_PERF_ANIM, ID_PERF_GLOW, ID_PERF_SAVER, ID_PERF_FPS, ID_PERF_SENSOR, ID_SHELF_THUMBS, ID_GLOW_SOURCE };
+              ID_PERF_ANIM, ID_PERF_GLOW, ID_PERF_SAVER, ID_PERF_FPS, ID_PERF_SENSOR, ID_SHELF_THUMBS, ID_GLOW_SOURCE, ID_HAND_ENGINE };
     enum Field { F_HOST, F_PATH, F_MODEL, F_PORT, F_KEY, F_G_URL, F_MS_ID, F_ICS, F_WCITY };
-    enum BtnId { B_MONITOR, B_CLEAR_KEY, B_DATA, B_QUIT, B_GUIDE, B_COPY_SCRIPT, B_WHISTLE, B_GLOW_COLOR, B_ACC_CONNECT, B_ACC_DISCONNECT, B_ACC_SYNC };
+    enum BtnId { B_MONITOR, B_CLEAR_KEY, B_DATA, B_QUIT, B_GUIDE, B_COPY_SCRIPT, B_WHISTLE, B_HAND, B_GLOW_COLOR, B_ACC_CONNECT, B_ACC_DISCONNECT, B_ACC_SYNC };
     enum HitKind { HK_SECTION, HK_BOOL, HK_STEP, HK_CHIP, HK_FIELD, HK_BUTTON };
 
     struct Hit { Gdiplus::RectF r; int kind, a, b; std::wstring name; bool on = false, shown = true; };
@@ -291,6 +291,7 @@ private:
         case ID_PERF_FPS: return &s.perfFps;
         case ID_PERF_SENSOR: return &s.perfSensorSec;
         case ID_GLOW_SOURCE: return &s.glowSource;
+        case ID_HAND_ENGINE: return &s.handEngine;
         default: return &s.aiProvider; // ID_AI_PROVIDER
         }
     }
@@ -303,6 +304,7 @@ private:
         case ID_PERF_FPS: return { { L"60 fps", L"30 fps" }, { 60, 30 } };
         case ID_PERF_SENSOR: return { { L"1 s", L"2 s", L"5 s" }, { 1, 2, 5 } };
         case ID_GLOW_SOURCE: return { { L"Clásico", L"Fondo", L"Windows", L"Propio" }, { 0, 1, 2, 3 } };
+        case ID_HAND_ENGINE: return { { L"MediaPipe", L"RTMPose" }, { 0, 1 } };
         default: return { { L"OpenAI", L"DeepSeek", L"Ollama local", L"Personalizado" }, { 0, 1, 2, 3 } }; // ID_AI_PROVIDER
         }
     }
@@ -473,11 +475,22 @@ private:
         case B_WHISTLE: // src is the model. Installed: remove it (fails quietly while the notch is using it); else download it
             if (g_cactusDownload[src] == 1) break;
             if (CactusInstalled(src)) {
-                if (!Ask((L"¿Borrar " + std::wstring(src ? L"Mirage" : L"Whistle") + L"? Para usarlo otra vez hay que descargarlo de nuevo.").c_str())) break;
+                if (!Ask((L"¿Borrar " + std::wstring(CACTUS_NAME[src]) + L"? Para usarlo otra vez hay que descargarlo de nuevo.").c_str())) break;
                 DeleteFileW(CactusModel(src).c_str());
                 if (!CactusInstalled(1 - src)) DeleteFileW(WhistleDll().c_str()); // the runtime goes with the last model
             } else {
                 CactusDownload(src);
+            }
+            Invalidate();
+            break;
+        case B_HAND: // src is the hand engine. Installed: remove its two files (the running camera keeps them in memory); else download them
+            if (g_handDownload[src] == 1) break;
+            if (HandInstalled(src)) {
+                if (!Ask((L"¿Borrar " + std::wstring(src == HAND_RTMPOSE ? L"RTMPose" : L"MediaPipe") + L"? Para usarlo otra vez hay que descargarlo de nuevo.").c_str())) break;
+                DeleteFileW(HandModel(src, 0).c_str());
+                DeleteFileW(HandModel(src, 1).c_str());
+            } else {
+                HandDownload(src);
             }
             Invalidate();
             break;
@@ -1026,7 +1039,7 @@ private:
                 row(L"Puerto", L"443 para https, 11434 para Ollama", 240.0f); field(F_PORT, CR - 100.0f, 80.0f); next();
                 row(L"HTTPS", L"Conexión cifrada"); toggle(ID_AI_HTTPS); next();
             }
-            for (int m = 0; m < CACTUS_COUNT; ++m) {
+            for (int m = 0; m < CACTUS_CAMERA; ++m) {
                 static const wchar_t* titles[] = { L"Whistle (voz a texto)", L"Mirage (ve tu pantalla)" };
                 static const wchar_t* sizes[] = { L"17", L"22" };
                 const bool has = CactusInstalled(m), busy = g_cactusDownload[m] == 1;
@@ -1034,6 +1047,16 @@ private:
                 row(titles[m], busy ? L"Descargando de Hugging Face… (" + mb + L" MB)" : has ? L"Instalado · modelo local de Cactus, " + mb + L" MB en disco"
                                    : g_cactusDownload[m] == 2 ? std::wstring(L"No se pudo descargar. Revisa tu conexión") : L"No instalado · " + mb + L" MB, se ejecuta en tu PC");
                 button(CR - 110.0f, B_WHISTLE, m, 110.0f, busy ? L"Descargando" : has ? L"Borrar" : L"Descargar", has);
+                next();
+            }
+            row(L"Motor de manos", L"El que usa la cámara del chip Cámara", 150.0f); chips(ID_HAND_ENGINE); next();
+            for (int e = 0; e < HAND_ENGINE_COUNT; ++e) {
+                static const wchar_t* titles[] = { L"MediaPipe · rápido", L"RTMPose · más preciso" };
+                static const wchar_t* sizes[] = { L"8 MB, CPU", L"59 MB, usa la GPU si hay" };
+                const bool has = HandInstalled(e), busy = g_handDownload[e] == 1;
+                row(titles[e], busy ? std::wstring(L"Descargando…") : has ? L"Instalado · " + std::wstring(sizes[e])
+                                   : g_handDownload[e] == 2 ? std::wstring(L"No se pudo descargar. Revisa tu conexión") : L"No instalado · " + std::wstring(sizes[e]));
+                button(CR - 110.0f, B_HAND, e, 110.0f, busy ? L"Descargando" : has ? L"Borrar" : L"Descargar", has);
                 next();
             }
             break;

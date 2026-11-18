@@ -15,7 +15,7 @@ if %errorlevel% neq 0 (
     )
 )
 
-%CXX% -O2 -std=c++17 -Wall src/main.cpp -o capri_notch.exe -mwindows -static -static-libgcc -static-libstdc++ -lgdiplus -lgdi32 -lwinhttp -lwinmm -luser32 -lshell32 -lruntimeobject -lole32 -loleaut32 -lshcore -lws2_32 -lbcrypt -lcrypt32 -ldwmapi -lpsapi -lpdh -lpowrprof -llocationapi -luuid -loleacc
+%CXX% -O2 -std=c++17 -Wall src/main.cpp -o capri_notch.exe -mwindows -static -static-libgcc -static-libstdc++ -lgdiplus -lgdi32 -lwinhttp -lwinmm -luser32 -lshell32 -lruntimeobject -lole32 -loleaut32 -lshcore -lws2_32 -lbcrypt -lcrypt32 -ldwmapi -lpsapi -lpdh -lpowrprof -llocationapi -luuid -loleacc -lmfplat -lmfreadwrite -lmf -lmfuuid
 
 if %errorlevel% equ 0 (
     echo [EXITO] Compilacion completada con exito: capri_notch.exe
