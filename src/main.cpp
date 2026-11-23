@@ -31,6 +31,7 @@
 #define TIMER_TUCK 7   // 100 ms, only while tucked: untuck when the pointer leaves the zone around the notch
 #define TIMER_SYNC 8      // every 5 min: pulls and pushes each connected calendar
 #define TIMER_SYNC_SOON 9 // one-shot, 2 s after a change to a remote event: uploads it without waiting for the timer
+#define TIMER_GESTURE 10 // one-shot: the gesture bump ends, the pill shrinks back
 #define WM_NEAR_CLICK (WM_USER + 102) // posted by the mouse hook with the screen point of every left click
 #define WM_TRAY (WM_USER + 111)       // the tray icon's callback (NOTIFYICON_VERSION_4: LOWORD(lParam) is the event)
 #define WM_WEATHER (WM_USER + 104)    // the forecast thread's answer: lParam a WeatherReply* that the UI thread owns (WeatherWork)
@@ -253,7 +254,8 @@ public:
     void ApplyVisibility() { ShowWindow(hWnd, hiddenByUser || hiddenByFullscreen ? SW_HIDE : SW_SHOWNOACTIVATE); }
 
     // The animation timer's rate: 60 fps, or 30 when the performance settings say so (see EffectivePerf)
-    void ApplyFrameRate() { SetTimer(hWnd, TIMER_ANIMATION, 1000 / EffectivePerf().fps, NULL); }
+    // SetTimer fires on the 15.6 ms system tick: asking 16 ms waits two ticks (32 fps), so ask a little under one frame
+    void ApplyFrameRate() { SetTimer(hWnd, TIMER_ANIMATION, 1000 / EffectivePerf().fps - 2, NULL); }
 
     // Full-screen games, videos and presentations: the notch steps aside, and comes back when they end
     void CheckFullscreen() {
@@ -393,7 +395,7 @@ public:
     void UpdateTargetDimensions() {
         if (!expanded) {
             targetWidth = ui.pillWidth + 2 * NOTCH_SHOULDER; // wide enough for the text the pill last drew
-            targetHeight = 34;
+            targetHeight = ui.GestureShowing() ? GESTURE_H : 34;
         } else {
             bool aside = activeTab == TAB_MEDIA && media.showLyrics, cal = activeTab == TAB_CALENDAR;
             targetWidth = (cal ? CAL_PANEL_W : aside ? LYRICS_PANEL_W : PANEL_W) + 2 * NOTCH_SHOULDER;
@@ -412,6 +414,7 @@ public:
             ui.calEvent = -1;
         }
         ui.CalHome();
+        ui.gestureUntil = 0; // reopening never shows a stale bump
         UpdateTargetDimensions();
     }
 
@@ -460,7 +463,7 @@ public:
         bool anim = EffectivePerf().anim;
         if (anim) {
             capri_spring(&animW, &velW, (float)targetWidth, dt);
-            capri_spring(&animH, &velH, (float)targetHeight, dt);
+            capri_spring(&animH, &velH, (float)targetHeight, dt, 130.0f, 17.0f); // the height trails the width a little, so the shape morphs instead of scaling
         } else { // animations off: the size jumps to its target
             animW = (float)targetWidth;
             animH = (float)targetHeight;
@@ -861,6 +864,20 @@ public:
         UpdateDisplay();
     }
 
+    // A hand command just ran: the collapsed pill bumps with its emoji (the open notch already shows the camera's line)
+    void ShowGesture(const std::string& utf8) {
+        size_t tab = utf8.find('\t');
+        if (tab == std::string::npos || expanded || tucked) return;
+        std::wstring icon = Wide(utf8.substr(0, tab)), text = Wide(utf8.substr(tab + 1));
+        ULONGLONG now = GetTickCount64();
+        if (icon != ui.gestureIcon || now >= ui.gestureUntil) ui.gestureAt = now; // a repeat (scroll, volume) extends without re-popping
+        ui.gestureIcon = icon;
+        ui.gestureText = text;
+        ui.gestureUntil = now + GESTURE_MS;
+        SetTimer(hWnd, TIMER_GESTURE, GESTURE_MS + 20, NULL);
+        UpdateTargetDimensions();
+    }
+
     // A file is being dragged over the notch, or was just dropped: open on Archivos so the drop has somewhere to land
     void OnDragNear() {
         whistle.Stop();
@@ -1112,8 +1129,7 @@ public:
                     ui.TabChanged(activeTab, (NotchTab)i);
                     activeTab = (NotchTab)i;
                     ui.editing = false;
-                    if (i == TAB_AI && whistle.model == CACTUS_WHISTLE) whistle.Start(hWnd); // choosing the tab starts the dictation; the screen is only shared by a click
-                    else whistle.Stop();
+                    if (i != TAB_AI) whistle.Stop(); // the AI modules only start from their bar, never by opening the tab
                     if (i == TAB_CALENDAR) ui.CalHome();
                     if (i == TAB_WEATHER) FetchWeather();
                     sensorTick = 0; // the first second on Sistema reads the sensors again
@@ -1285,6 +1301,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         } else if (wParam == TIMER_LEAVE) {
             KillTimer(hWnd, TIMER_LEAVE);
             if (!g_App.CursorOver() && !g_App.ui.editing && !g_App.whistle.Running()) g_App.SetExpanded(false); // typing or dictating keeps it open
+        } else if (wParam == TIMER_GESTURE) {
+            KillTimer(hWnd, TIMER_GESTURE);
+            g_App.UpdateTargetDimensions();
+            g_App.UpdateDisplay();
         } else if (wParam == TIMER_TUCK) {
             g_App.OnTuckTick();
         } else if (wParam == TIMER_SYNC) {
@@ -1414,6 +1434,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (cd && e.process && cd->cbData < (1u << 18)) {
             e.OnMessage(cd->dwData, std::string((const char*)cd->lpData, cd->cbData));
             if (wParam == CACTUS_CAMERA && cd->dwData == WHISTLE_ALERT) g_App.ShowCamera();
+            if (wParam == CACTUS_CAMERA && cd->dwData == WHISTLE_GESTURE) g_App.ShowGesture(std::string((const char*)cd->lpData, cd->cbData));
         }
         g_App.UpdateDisplay();
         return TRUE;

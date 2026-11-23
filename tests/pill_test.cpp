@@ -28,6 +28,13 @@ int main() {
     assert(CapriUI::IdleLine(none, 0, 3, L"fecha") == L"3 pendientes");
     assert(CapriUI::IdleLine(none, 0, 0, L"fecha") == L"fecha");
 
+    // The gesture bump's pop: starts at 0, lands on 1, overshoots a little in between
+    {
+        float mx = 0;
+        for (float p = 0; p <= 1.0f; p += 0.01f) mx = (std::max)(mx, CapriUI::PopScale(p));
+        assert(CapriUI::PopScale(0) == 0 && CapriUI::PopScale(1) == 1 && mx > 1 && mx < 1.15f);
+    }
+
     // The glow's colors: each half's average, lifted so its strongest channel is 210
     {
         Gdiplus::Bitmap two(2, 1, PixelFormat32bppARGB);

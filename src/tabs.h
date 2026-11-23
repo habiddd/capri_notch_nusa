@@ -155,9 +155,8 @@ inline void capri_sys_sample(CapriSys* out, bool temps, bool power) {
 }
 
 // One step of a damped spring pulling *x to target. dt in seconds. Snaps (x=target, v=0) when settled.
-inline void capri_spring(float* x, float* v, float target, float dt) {
-    const float STIFFNESS = 320.0f;
-    const float DAMPING = 30.0f;
+// Defaults: damping ratio ~0.72, a soft settle with a small bounce (~4%) in about half a second.
+inline void capri_spring(float* x, float* v, float target, float dt, float STIFFNESS = 170.0f, float DAMPING = 19.0f) {
     if (!x || !v) return;
     dt = std::isfinite(dt) ? std::clamp(dt, 0.0f, 0.05f) : 0.0f;
     int steps = (int)std::ceil(dt * 120.0f); // sub-steps of at most 1/120 s, keeps the integrator stable

@@ -164,7 +164,8 @@ inline void CactusDownload(int m) {
 }
 
 // What the worker sends the notch in WM_COPYDATA's dwData; the data is UTF-8
-enum : ULONG_PTR { WHISTLE_READY = 0x57480001, WHISTLE_TEXT = 0x57480002, WHISTLE_ERROR = 0x57480003, WHISTLE_ALERT = 0x57480004 };
+enum : ULONG_PTR { WHISTLE_READY = 0x57480001, WHISTLE_TEXT = 0x57480002, WHISTLE_ERROR = 0x57480003, WHISTLE_ALERT = 0x57480004,
+                          WHISTLE_GESTURE = 0x57480005 }; // GESTURE: camera only, UTF-8 emoji, a tab, then the label
 
 // from: the sender's model (CACTUS_*), which the notch reads from wParam
 inline void WhistleSend(HWND to, ULONG_PTR kind, const std::string& utf8, WPARAM from = 0) {

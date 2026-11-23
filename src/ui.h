@@ -26,6 +26,9 @@ constexpr int TAB_STEP = 38;          // icon tab row: distance between tabs and
 constexpr int TAB_W = 34;
 constexpr int TAB_ANIM_MS = 220;      // tab switch: highlight glide, content slide and fade
 inline const Gdiplus::Color ACCENT(255, 124, 156, 255); // soft periwinkle: active tab, bars, sparklines, focus edges
+constexpr int GESTURE_H = 44;         // pill height while a hand command's bump shows (normal 34)
+constexpr int GESTURE_MS = 1300;      // how long the bump stays
+constexpr int GESTURE_POP_MS = 450;   // the emoji's pop and ripple
 constexpr int PANEL_W = 460;          // expanded content column
 constexpr int MEDIA_COL_LYRICS = 300; // media controls column while lyrics share the panel
 constexpr int LYRICS_PANEL_W = 740;   // panel width with lyrics: the lyrics column gets the other 440 px
@@ -214,6 +217,14 @@ public:
     Gdiplus::Color noticeColor;
     ULONGLONG noticeUntil = 0;
 
+    // A hand command just ran (camera): the collapsed pill pops its emoji and grows a little until gestureUntil
+    std::wstring gestureIcon, gestureText;
+    ULONGLONG gestureAt = 0, gestureUntil = 0;
+    bool GestureShowing() const { return GetTickCount64() < gestureUntil; }
+
+    // Ease-out-back: 0 -> 1 with a small overshoot, the emoji's pop
+    static float PopScale(float p) { float q = p - 1.0f; return 1.0f + 2.70158f * q * q * q + 1.70158f * q * q; }
+
     // True while the collapsed pill has something moving: the equalizer, or the idle eyes' blink window
     bool PillLive(bool expanded, bool musicPlaying) const {
         return !expanded && ((g_settings.equalizer && musicPlaying) || (g_settings.eyes && GetTickCount64() % 4500 < 200));
@@ -231,7 +242,7 @@ public:
     bool Animating() const {
         if (!EffectivePerf().anim) return false;
         ULONGLONG t = GetTickCount64();
-        return t - lyricChangedAt < LYRIC_SLIDE_MS || t - tabChangedAt < TAB_ANIM_MS;
+        return t - lyricChangedAt < LYRIC_SLIDE_MS || t - tabChangedAt < TAB_ANIM_MS || t - gestureAt < GESTURE_POP_MS;
     }
 
     // Starts the switch animation. Opening Sistema samples at once so memory and disk are not blank for a second.
@@ -403,7 +414,7 @@ public:
 
         // === Notch body: near-black glass ===
         GraphicsPath notchPath;
-        AddNotch(notchPath, (float)fullWidth, (float)(height - 1), expanded ? 22.0f : 16.0f);
+        AddNotch(notchPath, (float)fullWidth, (float)(height - 1), 16.0f + 6.0f * std::clamp((height - 34) / 206.0f, 0.0f, 1.0f)); // corners round out as it grows
 
         PointF diagA(-1.0f, -1.0f), diagB((float)fullWidth + 1.0f, (float)height + 1.0f);
         if (perf.glow) {
@@ -494,7 +505,29 @@ public:
             GetLocalTime(&st);
 
             SolidBrush noticeBrush(noticeColor);
-            if (noticeUntil > t) {
+            if (gestureUntil > t) {
+                float p = perf.anim ? (std::min)(1.0f, (float)(t - gestureAt) / GESTURE_POP_MS) : 1.0f;
+                float cx = 20.0f, cy = height / 2.0f;
+                if (p < 1.0f) {
+                    float r = 9.0f + 9.0f * p;
+                    Pen ripple(Color((BYTE)((1.0f - p) * 160), ACCENT.GetR(), ACCENT.GetG(), ACCENT.GetB()), 1.5f);
+                    g.DrawEllipse(&ripple, cx - r, cy - r, 2 * r, 2 * r);
+                }
+                SolidBrush disc(Color(40, ACCENT.GetR(), ACCENT.GetG(), ACCENT.GetB()));
+                g.FillEllipse(&disc, cx - 13.0f, cy - 13.0f, 26.0f, 26.0f);
+                // GDI+ draws Segoe UI Emoji monochrome; colour glyphs would need DirectWrite
+                FontFamily emojiFamily(L"Segoe UI Emoji");
+                Font emojiFont(&emojiFamily, 14.0f, FontStyleRegular, UnitPoint);
+                GraphicsState es = g.Save();
+                float s = PopScale(p);
+                g.TranslateTransform(cx, cy);
+                g.ScaleTransform(s, s);
+                g.TranslateTransform(-cx, -cy);
+                g.DrawString(gestureIcon.c_str(), -1, &emojiFont, RectF(cx - 15.0f, cy - 15.0f, 30.0f, 30.0f), &center, &textWhite);
+                g.Restore(es);
+                centerText = gestureText;
+                rightUsed = false;
+            } else if (noticeUntil > t) {
                 g.DrawString(noticeIcon.c_str(), -1, &iconFont, leftSlot, &center, &noticeBrush);
                 centerText = notice;
                 rightText = noticeRight;
