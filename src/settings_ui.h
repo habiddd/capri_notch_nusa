@@ -925,7 +925,7 @@ private:
             row(L"Retraso al abrir", L"Lo que tarda en abrirse con el puntero encima"); stepper(ID_HOVER_MS); next();
             row(L"Retraso al cerrar", L"Gracia antes de contraerse al salir el puntero"); stepper(ID_LEAVE_MS); next();
             row(L"Esconder al hacer clic al lado", L"Un clic junto a la píldora la recoge"); toggle(ID_TUCK); next();
-            row(L"Ocultar en pantalla completa", L"Se oculta con juegos, vídeos y presentaciones"); toggle(ID_FULLSCREEN); next();
+            row(L"Recoger en pantalla completa", L"Queda en el borde con juegos, vídeos y presentaciones"); toggle(ID_FULLSCREEN); next();
             row(L"Monitor", L"Muestra la píldora en la siguiente pantalla"); button(CR - 170.0f, B_MONITOR, 0, 170.0f, L"Mover al otro monitor"); next();
             row(L"Archivos: miniaturas", L"Vista previa junto al nombre en el modo guardar"); toggle(ID_SHELF_THUMBS); next();
             break;

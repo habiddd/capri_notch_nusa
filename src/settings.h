@@ -13,7 +13,7 @@ struct Settings {
     int hoverDelay = 180;          // ms
     int leaveDelay = 300;          // ms
     bool tuckOnClick = true;
-    bool hideFullscreen = false;   // off: today the notch stays up over full-screen apps
+    bool hideFullscreen = false;   // on: the pill tucks to its edge over full-screen apps
     // Pill
     bool eyes = true;
     int sleepMin = 2;

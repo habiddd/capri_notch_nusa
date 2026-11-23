@@ -131,7 +131,7 @@ public:
     bool expanded = false;
     bool isTrackingMouse = false;
     bool tucked = false; // slid up out of the way after a click beside it
-    bool hiddenByUser = false, hiddenByFullscreen = false; // the tray's "Ocultar notch", and a full-screen app
+    bool hiddenByUser = false, fullscreen = false; // the tray's "Ocultar notch"; a full-screen app is up (the pill stays tucked)
     HICON trayIcon = NULL;
     int tuckY = 0;       // current slide-up offset, logical px
     std::wstring lyricSig; // last painted lyric state
@@ -238,7 +238,6 @@ public:
         SetTimer(hWnd, TIMER_SYNC, (UINT)g_settings.syncMinutes * 60000, NULL);
         pomo.Retime();
         if (RunAtLogin() != g_settings.startWithWindows) SetRunAtLogin(g_settings.startWithWindows);
-        if (!g_settings.hideFullscreen) hiddenByFullscreen = false;
         // A new place in Settings: the place is found again; the forecast follows on the next tick while its tab is open
         if (g_settings.weatherAuto != ui.weather.autoAsked || g_settings.weatherCityName != ui.weather.cityAsked) {
             ui.weather.located = false;
@@ -251,21 +250,23 @@ public:
         UpdateDisplay();
     }
 
-    void ApplyVisibility() { ShowWindow(hWnd, hiddenByUser || hiddenByFullscreen ? SW_HIDE : SW_SHOWNOACTIVATE); }
+    void ApplyVisibility() { ShowWindow(hWnd, hiddenByUser ? SW_HIDE : SW_SHOWNOACTIVATE); }
 
     // The animation timer's rate: 60 fps, or 30 when the performance settings say so (see EffectivePerf)
     // SetTimer fires on the 15.6 ms system tick: asking 16 ms waits two ticks (32 fps), so ask a little under one frame
     void ApplyFrameRate() { SetTimer(hWnd, TIMER_ANIMATION, 1000 / EffectivePerf().fps - 2, NULL); }
 
-    // Full-screen games, videos and presentations: the notch steps aside, and comes back when they end
+    // Full-screen games, videos and presentations: the pill tucks to its edge, and comes back when they end
     void CheckFullscreen() {
         QUERY_USER_NOTIFICATION_STATE qs = QUNS_ACCEPTS_NOTIFICATIONS;
-        bool full = g_settings.hideFullscreen && SUCCEEDED(SHQueryUserNotificationState(&qs)) &&
+        wchar_t cls[16] = L"";
+        GetClassNameW(GetForegroundWindow(), cls, 16);
+        bool desktop = !wcscmp(cls, L"Progman") || !wcscmp(cls, L"WorkerW"); // the desktop covers the monitor, so Windows may call it full screen
+        bool full = g_settings.hideFullscreen && !desktop && SUCCEEDED(SHQueryUserNotificationState(&qs)) &&
                     (qs == QUNS_BUSY || qs == QUNS_RUNNING_D3D_FULL_SCREEN || qs == QUNS_PRESENTATION_MODE);
-        if (full == hiddenByFullscreen) return;
-        hiddenByFullscreen = full;
-        if (full) SetExpanded(false);
-        ApplyVisibility();
+        if (full && !expanded) SetTucked(true); // also tucks again once the user has opened it from the edge and it closed
+        else if (!full && fullscreen) SetTucked(false);
+        fullscreen = full;
     }
 
     // The key goes to DPAPI, never to the ini; an empty key deletes the file
@@ -595,7 +596,7 @@ public:
         POINT pt;
         GetCursorPos(&pt);
         RECT zone = NearZone();
-        if (!PtInRect(&zone, pt)) SetTucked(false);
+        if (!fullscreen && !PtInRect(&zone, pt)) SetTucked(false);
     }
 
     // Scrolls the agenda just enough to bring row `task` of its task list (the dated tasks, then todo.tasks) into view
