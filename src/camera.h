@@ -168,7 +168,7 @@ struct GestureTemplate { Pose pose; float f[GESTURE_DIM]; };
 #include "gesture_templates.h"
 
 // Nearest-template distance above which a match is no gesture, by pose. Measured on the clips (train on one half, test on
-// the other): volume up, next, prev and lock match at a median 0.09-0.24 while the moving hand reached them at 0.58-1.44.
+// the other): volume up, next, prev and lock match at a median 0.09-0.32 while the moving hand reached them at 0.58-1.44.
 // Volume down varies more (up to 3.1) and the moving hand never matched it, so it takes any distance
 constexpr float GESTURE_REJECT[] = { 1e9f, 0.8f, 1e9f, 0.8f, 0.8f, 0.8f };
 

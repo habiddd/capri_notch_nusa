@@ -37,7 +37,7 @@ inline bool HandInstalled(int e) { return GetFileAttributesW(HandModel(e, 0).c_s
 // OpenCV Zoo's MediaPipe hand models (Apache 2.0), by the hash each file must have
 inline constexpr const wchar_t* CAMERA_MODEL_PATH[] = { L"/opencv/palm_detection_mediapipe/resolve/main/palm_detection_mediapipe_2023feb.onnx", L"/opencv/handpose_estimation_mediapipe/resolve/main/handpose_estimation_mediapipe_2023feb.onnx" };
 inline constexpr const char* CAMERA_MODEL_SHA256[] = { "78ff51c38496b7fc8b8ebdb6cc8c1abb02fa6c38427c6848254cdaba57fcce7c", "db0898ae717b76b075d9bf563af315b29562e11f8df5027a1ef07b02bef6d81c" };
-inline constexpr const wchar_t* CAMERA_HELP = L"Índice: mueve el cursor (despacio = preciso) · Pinza rápida: clic · Pinza y mueve: arrastrar · Pinza quieta 0,6 s: clic derecho · V y sube/baja: desplazar · Cuernos 1 s: reproducir/pausar · Pulgar fuera y desliza arriba/abajo: volumen, a los lados: pista · Puño 2 s: bloquear el PC";
+inline constexpr const wchar_t* CAMERA_HELP = L"Índice y medio arriba: subir volumen · Índice y medio abajo: bajar volumen · Pulgar a tu derecha: siguiente canción · Índice y medio a tu izquierda: canción anterior · Palma abierta 1 s: bloquear el PC (quítala para cancelar)";
 inline bool CactusInstalled(int m) {
     if (m == CACTUS_CAMERA) return HandInstalled(g_settings.handEngine);
     return GetFileAttributesW(WhistleDll().c_str()) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(CactusModel(m).c_str()) != INVALID_FILE_ATTRIBUTES;
