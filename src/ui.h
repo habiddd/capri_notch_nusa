@@ -19,7 +19,8 @@ constexpr int NOTCH_SHOULDER = 12;
 constexpr int LYRIC_SLIDE_MS = 260;
 constexpr int CLOSED_W = 220;     // collapsed content width with a title
 constexpr int CLOSED_MAX_W = 560; // longer collapsed text widens the notch up to this, then ellipsizes
-constexpr int CLOSED_CHROME = 104; // art tile + clock + padding around the centered text
+constexpr int CLOSED_CLOCK_W = 42; // the clock always leads the collapsed pill; every state draws to its right
+constexpr int CLOSED_CHROME = 104; // art tile + right value + padding around the centered text
 constexpr int CLOSED_CHROME_LEFT = 60; // the same without a value on the right
 constexpr int CLOSED_FIT_MIN = 130;    // narrowest pill of the views that hug their content (Sistema, Pomodoro)
 constexpr int TAB_STEP = 38;          // icon tab row: distance between tabs and the highlight's width
@@ -496,13 +497,20 @@ public:
                 SolidBrush b(c);
                 g.FillPath(&b, &p);
             };
-            RectF leftSlot(10.0f, 7.0f, 20.0f, 20.0f), rightSlot((float)(width - 60), 0.0f, 50.0f, (float)height);
             std::wstring centerText, rightText;
             SolidBrush* rightBrush = &textWhite;
             bool fit = false, rightUsed = true;
             bool pomoOn = pomo.state.isRunning, music = media.currentTitle != media.idleTitle;
             SYSTEMTIME st;
             GetLocalTime(&st);
+            // The clock always shows first; every state below draws in the space to its right
+            wchar_t clock[8];
+            wsprintfW(clock, L"%02d:%02d", st.wHour, st.wMinute);
+            g.DrawString(clock, -1, &fontSmallBold, RectF(10.0f, 0.0f, (float)CLOSED_CLOCK_W, (float)height), &leftMid, &textWhite);
+            GraphicsState clockShift = g.Save();
+            g.TranslateTransform((float)CLOSED_CLOCK_W, 0.0f);
+            const int cw = width - CLOSED_CLOCK_W; // content width right of the clock
+            RectF leftSlot(10.0f, 7.0f, 20.0f, 20.0f), rightSlot((float)(cw - 60), 0.0f, 50.0f, (float)height);
 
             SolidBrush noticeBrush(noticeColor);
             if (gestureUntil > t) {
@@ -542,7 +550,7 @@ public:
                 fit = true;
                 float frac = pomo.state.totalSeconds > 0 ? 1.0f - (float)pomo.state.remainingSeconds / pomo.state.totalSeconds : 0.0f;
                 Pen trackPen(Color(30, 255, 255, 255), 2.0f), fillPen(Color(255, 239, 68, 68), 2.0f);
-                float lineW = (float)(width - 32), y = (float)(height - 4);
+                float lineW = (float)(cw - 32), y = (float)(height - 4);
                 if (g_settings.pillPomoBar) g.DrawLine(&trackPen, 16.0f, y, 16.0f + lineW, y);
                 if (g_settings.pillPomoBar && frac > 0.0f) g.DrawLine(&fillPen, 16.0f, y, 16.0f + lineW * (std::min)(1.0f, frac), y);
             } else if (activeTab == TAB_SYSTEM && g_settings.pillSys) {
@@ -585,7 +593,7 @@ public:
                 for (int i = 0; g_settings.equalizer && i < 4; ++i) {
                     float h = media.isPlaying ? 4.0f + 10.0f * (0.5f + 0.5f * sinf(t * 0.012f + i * 1.7f)) : 4.0f;
                     GraphicsPath p;
-                    AddRoundRect(p, (float)(width - 30 + i * 5), (height - h) / 2.0f, 3.0f, h, 1.5f);
+                    AddRoundRect(p, (float)(cw - 30 + i * 5), (height - h) / 2.0f, 3.0f, h, 1.5f);
                     g.FillPath(&bar, &p);
                 }
             } else {
@@ -608,19 +616,18 @@ public:
                 for (const auto& task : todo.tasks) open += task.completed ? 0 : 1;
                 centerText = IdleLine(timed, st.wHour * 60 + st.wMinute, open,
                                       std::wstring(DAY_NAMES[st.wDayOfWeek]) + L" " + std::to_wstring(st.wDay) + L" de " + MONTH_NAMES[st.wMonth - 1]);
-                wchar_t clock[8];
-                wsprintfW(clock, L"%02d:%02d", st.wHour, st.wMinute);
-                rightText = clock;
+                rightUsed = false; // the clock already leads the pill
             }
             // Measured only when what is shown changes; the app resizes the pill to pillWidth. The views composed in Settings
             // (fit) hug their content, so switching a figure on or off there widens or narrows the pill.
             std::wstring key = centerText + (fit ? L"\x1" : L"") + (rightUsed ? L"" : L"\x2");
             if (key != pillText) {
                 pillText = key;
-                pillWidth = ClosedWidthFor(centerText, fit ? CLOSED_FIT_MIN : CLOSED_W, rightUsed ? CLOSED_CHROME : CLOSED_CHROME_LEFT);
+                pillWidth = ClosedWidthFor(centerText, (fit ? CLOSED_FIT_MIN : CLOSED_W) + CLOSED_CLOCK_W, (rightUsed ? CLOSED_CHROME : CLOSED_CHROME_LEFT) + CLOSED_CLOCK_W);
             }
-            g.DrawString(centerText.c_str(), -1, &fontSmall, RectF(36.0f, 0.0f, (float)(width - (rightUsed ? 92 : 48)), (float)height), &center, &textWhite);
+            g.DrawString(centerText.c_str(), -1, &fontSmall, RectF(36.0f, 0.0f, (float)(cw - (rightUsed ? 92 : 48)), (float)height), &center, &textWhite);
             g.DrawString(rightText.c_str(), -1, &fontSmallBold, rightSlot, &rightMid, rightBrush);
+            g.Restore(clockShift);
         } else {
             // === EXPANDED NOTCH VIEW ===
             // 1. Icon tab row; active tab sits in a soft rounded square
