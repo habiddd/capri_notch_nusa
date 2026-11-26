@@ -14,6 +14,7 @@ struct Settings {
     int leaveDelay = 300;          // ms
     bool tuckOnClick = true;
     bool hideFullscreen = false;   // on: the pill tucks to its edge over full-screen apps
+    int idleTuckSec = 0;           // 0 (off), 10, 30, 60 or 300: unused this long over an app, the pill tucks to its edge
     // Pill
     bool eyes = true;
     int sleepMin = 2;
@@ -116,6 +117,7 @@ inline bool LoadSettings(const std::wstring& path, Settings& s) {
     num(L"leaveDelay", s.leaveDelay, 100, 2000);
     flag(L"tuckOnClick", s.tuckOnClick);
     flag(L"hideFullscreen", s.hideFullscreen);
+    numIn(L"idleTuckSec", s.idleTuckSec, { 0, 10, 30, 60, 300 });
     flag(L"eyes", s.eyes);
     num(L"sleepMin", s.sleepMin, 1, 10);
     flag(L"equalizer", s.equalizer);
@@ -165,6 +167,7 @@ inline bool SaveSettings(const std::wstring& path, const Settings& s) {
     line(L"leaveDelay", std::to_wstring(s.leaveDelay));
     line(L"tuckOnClick", flag(s.tuckOnClick));
     line(L"hideFullscreen", flag(s.hideFullscreen));
+    line(L"idleTuckSec", std::to_wstring(s.idleTuckSec));
     line(L"eyes", flag(s.eyes));
     line(L"sleepMin", std::to_wstring(s.sleepMin));
     line(L"equalizer", flag(s.equalizer));

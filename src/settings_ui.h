@@ -147,7 +147,7 @@ private:
               ID_SYNC_MIN, ID_AI_PROVIDER, ID_AI_HTTPS, ID_WEATHER_AUTO, ID_SYS_TEMPS, ID_SYS_POWER, ID_TASKS_CAL,
               ID_PILL_ART, ID_PILL_ARTIST, ID_PILL_POMO_IDLE, ID_PILL_POMO_BAR, ID_PILL_POMO_SESSIONS, ID_PILL_SYS, ID_PILL_SYS_CPU,
               ID_PILL_SYS_GPU, ID_PILL_SYS_RAM, ID_PILL_SYS_DISK, ID_PILL_SYS_POWER, // the ID_PILL_ block follows PillFlags' order
-              ID_PERF_ANIM, ID_PERF_GLOW, ID_PERF_SAVER, ID_PERF_FPS, ID_PERF_SENSOR, ID_SHELF_THUMBS, ID_GLOW_SOURCE, ID_HAND_ENGINE };
+              ID_PERF_ANIM, ID_PERF_GLOW, ID_PERF_SAVER, ID_PERF_FPS, ID_PERF_SENSOR, ID_SHELF_THUMBS, ID_GLOW_SOURCE, ID_HAND_ENGINE, ID_IDLE_TUCK };
     enum Field { F_HOST, F_PATH, F_MODEL, F_PORT, F_KEY, F_G_URL, F_MS_ID, F_ICS, F_WCITY };
     enum BtnId { B_MONITOR, B_CLEAR_KEY, B_DATA, B_QUIT, B_GUIDE, B_COPY_SCRIPT, B_WHISTLE, B_HAND, B_GLOW_COLOR, B_ACC_CONNECT, B_ACC_DISCONNECT, B_ACC_SYNC };
     enum HitKind { HK_SECTION, HK_BOOL, HK_STEP, HK_CHIP, HK_FIELD, HK_BUTTON };
@@ -292,6 +292,7 @@ private:
         case ID_PERF_SENSOR: return &s.perfSensorSec;
         case ID_GLOW_SOURCE: return &s.glowSource;
         case ID_HAND_ENGINE: return &s.handEngine;
+        case ID_IDLE_TUCK: return &s.idleTuckSec;
         default: return &s.aiProvider; // ID_AI_PROVIDER
         }
     }
@@ -305,6 +306,7 @@ private:
         case ID_PERF_SENSOR: return { { L"1 s", L"2 s", L"5 s" }, { 1, 2, 5 } };
         case ID_GLOW_SOURCE: return { { L"Clásico", L"Fondo", L"Windows", L"Propio" }, { 0, 1, 2, 3 } };
         case ID_HAND_ENGINE: return { { L"MediaPipe", L"RTMPose" }, { 0, 1 } };
+        case ID_IDLE_TUCK: return { { L"Nunca", L"10 s", L"30 s", L"1 min", L"5 min" }, { 0, 10, 30, 60, 300 } };
         default: return { { L"OpenAI", L"DeepSeek", L"Ollama local", L"Personalizado" }, { 0, 1, 2, 3 } }; // ID_AI_PROVIDER
         }
     }
@@ -926,6 +928,7 @@ private:
             row(L"Retraso al cerrar", L"Gracia antes de contraerse al salir el puntero"); stepper(ID_LEAVE_MS); next();
             row(L"Esconder al hacer clic al lado", L"Un clic junto a la píldora la recoge"); toggle(ID_TUCK); next();
             row(L"Recoger en pantalla completa", L"Queda en el borde con juegos, vídeos y presentaciones"); toggle(ID_FULLSCREEN); next();
+            row(L"Recoger sin uso", L"En una app, tras este tiempo sin tocarla", 200.0f); chips(ID_IDLE_TUCK); next();
             row(L"Monitor", L"Muestra la píldora en la siguiente pantalla"); button(CR - 170.0f, B_MONITOR, 0, 170.0f, L"Mover al otro monitor"); next();
             row(L"Archivos: miniaturas", L"Vista previa junto al nombre en el modo guardar"); toggle(ID_SHELF_THUMBS); next();
             break;

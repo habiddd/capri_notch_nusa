@@ -131,7 +131,9 @@ public:
     bool expanded = false;
     bool isTrackingMouse = false;
     bool tucked = false; // slid up out of the way after a click beside it
-    bool hiddenByUser = false, fullscreen = false; // the tray's "Ocultar notch"; a full-screen app is up (the pill stays tucked)
+    bool hiddenByUser = false; // the tray's "Ocultar notch"
+    bool autoTucked = false; // tucked by a full-screen app or by idling (CheckAutoTuck): it stays tucked when the pointer leaves, and hovering the edge opens it
+    ULONGLONG lastUsed = GetTickCount64(); // last time the pill was open, under the pointer, or showing a notice
     HICON trayIcon = NULL;
     int tuckY = 0;       // current slide-up offset, logical px
     std::wstring lyricSig; // last painted lyric state
@@ -256,17 +258,20 @@ public:
     // SetTimer fires on the 15.6 ms system tick: asking 16 ms waits two ticks (32 fps), so ask a little under one frame
     void ApplyFrameRate() { SetTimer(hWnd, TIMER_ANIMATION, 1000 / EffectivePerf().fps - 2, NULL); }
 
-    // Full-screen games, videos and presentations: the pill tucks to its edge, and comes back when they end
-    void CheckFullscreen() {
+    // Full-screen games, videos and presentations, or an app with the pill unused for idleTuckSec: the pill tucks to its edge,
+    // and comes back when they end. Never on the desktop.
+    void CheckAutoTuck() {
+        ULONGLONG now = GetTickCount64();
         QUERY_USER_NOTIFICATION_STATE qs = QUNS_ACCEPTS_NOTIFICATIONS;
         wchar_t cls[16] = L"";
         GetClassNameW(GetForegroundWindow(), cls, 16);
         bool desktop = !wcscmp(cls, L"Progman") || !wcscmp(cls, L"WorkerW"); // the desktop covers the monitor, so Windows may call it full screen
+        if (desktop || expanded || CursorOver() || now < ui.noticeUntil || media.showLyrics) lastUsed = now; // idle time counts only over an app, lyrics off
         bool full = g_settings.hideFullscreen && !desktop && SUCCEEDED(SHQueryUserNotificationState(&qs)) &&
                     (qs == QUNS_BUSY || qs == QUNS_RUNNING_D3D_FULL_SCREEN || qs == QUNS_PRESENTATION_MODE);
-        if (full && !expanded) SetTucked(true); // also tucks again once the user has opened it from the edge and it closed
-        else if (!full && fullscreen) SetTucked(false);
-        fullscreen = full;
+        bool idle = g_settings.idleTuckSec > 0 && !desktop && now - lastUsed >= (ULONGLONG)g_settings.idleTuckSec * 1000;
+        if ((full || idle) && !expanded) { SetTucked(true); autoTucked = true; } // also tucks again once opened from the edge and closed
+        else if (!full && !idle && autoTucked) SetTucked(false);
     }
 
     // The key goes to DPAPI, never to the ini; an empty key deletes the file
@@ -546,7 +551,7 @@ public:
     void OnSecondTick() {
         if ((whistle.process && !whistle.Running()) || (camera.process && !camera.Running())) UpdateDisplay(); // a worker ended by itself: show why
         CheckReminders();
-        CheckFullscreen();
+        CheckAutoTuck();
         pomo.Tick();
         media.DetectActiveTrack();
         if (activeTab == TAB_SYSTEM && sensorTick++ % g_settings.perfSensorSec == 0) { // sampled only while shown (open, or collapsed on this tab): the CPU figure is a delta since the last call
@@ -581,6 +586,7 @@ public:
             SetTimer(hWnd, TIMER_TUCK, 100, NULL);
         } else {
             KillTimer(hWnd, TIMER_TUCK);
+            autoTucked = false;
         }
     }
 
@@ -596,7 +602,7 @@ public:
         POINT pt;
         GetCursorPos(&pt);
         RECT zone = NearZone();
-        if (!fullscreen && !PtInRect(&zone, pt)) SetTucked(false);
+        if (!autoTucked && !PtInRect(&zone, pt)) SetTucked(false);
     }
 
     // Scrolls the agenda just enough to bring row `task` of its task list (the dated tasks, then todo.tasks) into view
@@ -1298,7 +1304,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             g_App.UpdateDisplay();
         } else if (wParam == TIMER_HOVER) {
             KillTimer(hWnd, TIMER_HOVER);
-            if (!g_App.tucked && g_App.CursorOver()) g_App.SetExpanded(true);
+            if ((!g_App.tucked || g_App.autoTucked) && g_App.CursorOver()) { g_App.SetTucked(false); g_App.SetExpanded(true); } // an auto-tucked edge opens on hover
         } else if (wParam == TIMER_LEAVE) {
             KillTimer(hWnd, TIMER_LEAVE);
             if (!g_App.CursorOver() && !g_App.ui.editing && !g_App.whistle.Running()) g_App.SetExpanded(false); // typing or dictating keeps it open
@@ -1324,7 +1330,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             tme.hwndTrack = hWnd;
             TrackMouseEvent(&tme);
             g_App.isTrackingMouse = true;
-            if (!g_App.expanded && !g_App.tucked && g_settings.hoverOpen) SetTimer(hWnd, TIMER_HOVER, g_settings.hoverDelay, NULL);
+            if (!g_App.expanded && (!g_App.tucked || g_App.autoTucked) && g_settings.hoverOpen) SetTimer(hWnd, TIMER_HOVER, g_settings.hoverDelay, NULL);
         }
         KillTimer(hWnd, TIMER_LEAVE); // back inside before the grace period ran out
         break;

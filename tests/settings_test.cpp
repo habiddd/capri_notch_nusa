@@ -20,7 +20,7 @@ int main() {
     // No file: the defaults are today's behavior, and LoadSettings says there was nothing to read
     Settings s;
     assert(!LoadSettings(ini, s));
-    assert(!s.startWithWindows && s.hoverOpen && s.hoverDelay == 180 && s.leaveDelay == 300 && s.tuckOnClick && !s.hideFullscreen);
+    assert(!s.startWithWindows && s.hoverOpen && s.hoverDelay == 180 && s.leaveDelay == 300 && s.tuckOnClick && !s.hideFullscreen && s.idleTuckSec == 0);
     assert(s.eyes && s.sleepMin == 2 && s.equalizer && s.chargerNotice && s.pillLyrics);
     assert(s.focusMin == 25 && s.breakMin == 5 && s.pomoSound && s.calDefaultView == 0 && s.defaultAlert == 10);
     assert(s.defaultCategory == 0 && s.reminderSound && s.syncMinutes == 5);
@@ -29,7 +29,7 @@ int main() {
 
     // Round trip of every field, with an accent in a text field
     Settings w;
-    w.startWithWindows = true; w.hoverOpen = false; w.hoverDelay = 450; w.leaveDelay = 1200; w.tuckOnClick = false; w.hideFullscreen = true;
+    w.startWithWindows = true; w.hoverOpen = false; w.hoverDelay = 450; w.leaveDelay = 1200; w.tuckOnClick = false; w.hideFullscreen = true; w.idleTuckSec = 30;
     w.eyes = false; w.sleepMin = 7; w.equalizer = false; w.chargerNotice = false; w.pillLyrics = false;
     w.focusMin = 50; w.breakMin = 12; w.pomoSound = false;
     w.calDefaultView = 2; w.defaultAlert = 30; w.defaultMoreAlerts = 9; w.defaultCategory = 4; w.reminderSound = false; w.syncMinutes = 15;
@@ -39,7 +39,7 @@ int main() {
     assert(SaveSettings(ini, w));
     Settings r;
     assert(LoadSettings(ini, r));
-    assert(r.startWithWindows && !r.hoverOpen && r.hoverDelay == 450 && r.leaveDelay == 1200 && !r.tuckOnClick && r.hideFullscreen);
+    assert(r.startWithWindows && !r.hoverOpen && r.hoverDelay == 450 && r.leaveDelay == 1200 && !r.tuckOnClick && r.hideFullscreen && r.idleTuckSec == 30);
     assert(!r.eyes && r.sleepMin == 7 && !r.equalizer && !r.chargerNotice && !r.pillLyrics);
     assert(r.focusMin == 50 && r.breakMin == 12 && !r.pomoSound);
     assert(r.calDefaultView == 2 && r.defaultAlert == 30 && r.defaultMoreAlerts == 9 && r.defaultCategory == 4 && !r.reminderSound && r.syncMinutes == 15);
